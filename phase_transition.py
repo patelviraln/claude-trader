@@ -3,8 +3,8 @@
 Phase transition CLI for the Wheel strategy state machine.
 
 Commands:
-    assign  — put was assigned; move ticker from Phase A → B
-    exit    — call was exercised or expired worthless; move ticker from Phase B → A
+    assign  — put was assigned; move ticker from Phase A -> B
+    exit    — call was exercised or expired worthless; move ticker from Phase B -> A
 
 Usage:
     python phase_transition.py assign NVDA --cost-basis 880.50
@@ -30,7 +30,7 @@ log = structlog.get_logger()
 
 
 def cmd_assign(args: argparse.Namespace) -> None:
-    """Move ticker from Phase A → B: put was assigned, now holding 100 shares."""
+    """Move ticker from Phase A -> B: put was assigned, now holding 100 shares."""
     state_path = Path(args.state)
     ticker = args.ticker.upper()
     existing = get_ticker_state(state_path, ticker)
@@ -60,13 +60,13 @@ def cmd_assign(args: argparse.Namespace) -> None:
         assignment_date=new_state["assignment_date"],
     )
     print(
-        f"[ok] {ticker}: Phase A → B  |  100 shares @ ${args.cost_basis:.2f}  "
+        f"[ok] {ticker}: Phase A -> B  |  100 shares @ ${args.cost_basis:.2f}  "
         f"|  assigned {new_state['assignment_date']}"
     )
 
 
 def cmd_exit(args: argparse.Namespace) -> None:
-    """Move ticker from Phase B → A: call exercised or expired, shares cleared."""
+    """Move ticker from Phase B -> A: call exercised or expired, shares cleared."""
     state_path = Path(args.state)
     ticker = args.ticker.upper()
     existing = get_ticker_state(state_path, ticker)
@@ -90,7 +90,7 @@ def cmd_exit(args: argparse.Namespace) -> None:
     }
     set_ticker_state(state_path, ticker, new_state)
     log.info("transition.exited", ticker=ticker)
-    print(f"[ok] {ticker}: Phase B → A  |  shares cleared, ready to sell puts")
+    print(f"[ok] {ticker}: Phase B -> A  |  shares cleared, ready to sell puts")
 
 
 def main() -> None:
@@ -103,7 +103,7 @@ def main() -> None:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_assign = sub.add_parser("assign", help="Put assigned: Phase A → B")
+    p_assign = sub.add_parser("assign", help="Put assigned: Phase A -> B")
     p_assign.add_argument("ticker", help="Ticker symbol, e.g. NVDA")
     p_assign.add_argument(
         "--cost-basis",
@@ -112,7 +112,7 @@ def main() -> None:
         help="Assignment price per share (strike price)",
     )
 
-    p_exit = sub.add_parser("exit", help="Call exercised/expired: Phase B → A")
+    p_exit = sub.add_parser("exit", help="Call exercised/expired: Phase B -> A")
     p_exit.add_argument("ticker", help="Ticker symbol, e.g. NVDA")
 
     args = parser.parse_args()
