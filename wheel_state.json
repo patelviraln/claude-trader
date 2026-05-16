@@ -46,5 +46,13 @@
     "assignment_date": null,
     "open_put_strike": null,
     "open_put_expiry": null
+  },
+  "NVDA": {
+    "phase": "A",
+    "shares_held": 0,
+    "cost_basis": null,
+    "assignment_date": null,
+    "open_put_strike": null,
+    "open_put_expiry": null
   }
 }
