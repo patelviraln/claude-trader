@@ -1,4 +1,5 @@
 import os
+import structlog
 import datetime as dt
 from datetime import date, datetime, timezone, timedelta
 
@@ -6,6 +7,21 @@ import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient, OptionHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, OptionChainRequest
 from alpaca.data.timeframe import TimeFrame
+
+import src.logger as _log_setup  # noqa: F401
+
+logger = structlog.get_logger(__name__)
+
+
+def _require_env(key: str) -> str:
+    """Return env var value or raise a clear RuntimeError on missing key."""
+    try:
+        return os.environ[key]
+    except KeyError:
+        raise RuntimeError(
+            f"Required environment variable '{key}' is not set. "
+            "Copy .env.example to .env and populate your Alpaca credentials."
+        )
 
 
 class AlpacaPaperAdapter:
@@ -15,8 +31,8 @@ class AlpacaPaperAdapter:
     """
 
     def __init__(self):
-        api_key = os.environ["ALPACA_API_KEY"]
-        secret_key = os.environ["ALPACA_SECRET_KEY"]
+        api_key = _require_env("ALPACA_API_KEY")
+        secret_key = _require_env("ALPACA_SECRET_KEY")
 
         self._stock_client = StockHistoricalDataClient(api_key, secret_key)
         self._option_client = OptionHistoricalDataClient(api_key, secret_key)
@@ -43,13 +59,14 @@ class AlpacaPaperAdapter:
             raise RuntimeError(f"No OHLCV data returned for {ticker} — check ticker symbol")
 
         df = df[["open", "high", "low", "close", "volume"]].astype(float)
-        df = df.iloc[-bars:]
+        result = df.iloc[-bars:]
 
-        if len(df) < bars // 2:
+        if len(result) < bars // 2:
             raise RuntimeError(
-                f"Insufficient OHLCV bars for {ticker}: got {len(df)}, need at least {bars // 2}"
+                f"Insufficient OHLCV bars for {ticker}: got {len(result)}, need at least {bars // 2}"
             )
-        return df
+        logger.info("ohlcv_fetched", ticker=ticker, bars=len(result))
+        return result
 
     def get_options_chain(self, ticker: str, dte_min: int, dte_max: int) -> pd.DataFrame:
         today = dt.date.today()
@@ -111,7 +128,9 @@ class AlpacaPaperAdapter:
         df = pd.DataFrame(records)
         today_ts = pd.Timestamp(today)
         df["dte"] = (pd.to_datetime(df["expiry"]) - today_ts).dt.days
-        return df.reset_index(drop=True)
+        result = df.reset_index(drop=True)
+        logger.info("options_chain_fetched", ticker=ticker, contracts=len(result))
+        return result
 
     def get_historical_ohlcv(self, ticker: str, start_date: date, end_date: date) -> pd.DataFrame:
         start_dt = datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)

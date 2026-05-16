@@ -8,10 +8,15 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import structlog
 
+import src.logger as _log_setup  # noqa: F401
 from src.adapters.base import DataAdapter
 from src.indicator_engine import compute_iv_rank
 from src.iv_history import append_iv_sample, load_iv_series
+
+logger = structlog.get_logger(__name__)
+
 from src.signal_output import (
     IndicatorReadings,
     SignalCard,
@@ -115,11 +120,11 @@ def run_signal(
     filter_results = strategy.evaluate(ticker, ohlcv, options_chain, state)
 
     # Check for hard stop
-    last = filter_results[-1]
     hard_stopped = any(not r.passed and r.hard_stop for r in filter_results)
 
     if hard_stopped:
         stop_result = next(r for r in filter_results if not r.passed and r.hard_stop)
+        logger.info("signal_blocked", ticker=ticker, filter=stop_result.filter_name, reason=stop_result.reason)
         card = SignalCard(
             ticker=ticker,
             phase="NO_SIGNAL",
@@ -129,10 +134,17 @@ def run_signal(
     else:
         adj = _collect_adjustments(filter_results)
         soft_flags = _collect_soft_flags(filter_results)
-        delta_distance = abs(adj.get("delta_estimate", 0.0)) - 0.30
+        delta_estimate: float | None = adj.get("delta_estimate")
+        if delta_estimate is None:
+            raise RuntimeError(
+                "delta_estimate missing from combined filter adjustments; "
+                "verify DeltaTargetFilter ran and passed before signal assembly."
+            )
+        delta_distance = abs(delta_estimate) - 0.30
         tier, rationale = compute_confidence_tier(soft_flags, abs(delta_distance), iv_rank)
 
         signal_phase = "SELL_PUT" if phase == "A" else "SELL_CALL"
+        logger.info("signal_emitted", ticker=ticker, phase=signal_phase, tier=tier)
 
         readings: IndicatorReadings | None = None
         if all(k in adj for k in ("ema50", "rsi14", "bb_upper", "bb_lower", "bb_percent_b")):
@@ -180,13 +192,11 @@ def run_signal(
         card.thesis_text = _gen(card, iv_history_dir=Path(iv_history_dir))
 
     if execute and executor is not None and card.phase != "NO_SIGNAL":
-        import structlog
-        _log = structlog.get_logger()
         try:
             order = executor.place_order_from_card(card)
             card.order_id = order["order_id"]
             card.order_status = order["status"]
-            _log.info(
+            logger.info(
                 "executor.order_placed",
                 ticker=ticker,
                 occ_symbol=order["occ_symbol"],
@@ -195,7 +205,7 @@ def run_signal(
                 status=order["status"],
             )
         except Exception as exc:
-            _log.error("executor.order_failed", ticker=ticker, error=str(exc))
+            logger.error("executor.order_failed", ticker=ticker, error=str(exc))
 
     if print_output:
         print_signal_card(card)

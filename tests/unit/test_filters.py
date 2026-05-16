@@ -59,19 +59,19 @@ class TestPhaseGateFilter:
     def test_phase_A_passes(self):
         f = PhaseGateFilter()
         state = WheelState(phase="A")
-        r = f.run("AAPL", state)
+        r = f.run({"ticker": "AAPL"}, state, {})
         assert r.passed
         assert r.adjustments["phase"] == "A"
 
     def test_phase_B_passes(self):
         f = PhaseGateFilter()
-        r = f.run("AAPL", WheelState(phase="B"))
+        r = f.run({"ticker": "AAPL"}, WheelState(phase="B"), {})
         assert r.passed
 
     def test_invalid_phase_hard_stops(self):
         f = PhaseGateFilter()
         state = WheelState.model_construct(phase="X")
-        r = f.run("AAPL", state)
+        r = f.run({"ticker": "AAPL"}, state, {})
         assert not r.passed
         assert r.hard_stop
 
@@ -81,18 +81,18 @@ class TestPhaseGateFilter:
 class TestEMATrendFilter:
     def test_rising_trend_passes(self):
         f = EMATrendFilter(ema_period=50)
-        r = f.run(_rising_df())
+        r = f.run({"ohlcv": _rising_df()}, WheelState(), {})
         assert r.passed
 
     def test_falling_trend_hard_stops(self):
         f = EMATrendFilter(ema_period=50)
-        r = f.run(_falling_df())
+        r = f.run({"ohlcv": _falling_df()}, WheelState(), {})
         assert not r.passed
         assert r.hard_stop
 
     def test_adjustments_contain_ema_and_slope(self):
         f = EMATrendFilter(ema_period=50)
-        r = f.run(_rising_df())
+        r = f.run({"ohlcv": _rising_df()}, WheelState(), {})
         assert "ema50" in r.adjustments
         assert "ema50_slope" in r.adjustments
 
@@ -105,7 +105,7 @@ class TestRSIFilter:
         prices = [100 + (1 if i % 2 == 0 else -0.5) for i in range(60)]
         df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices, "volume": [1_000_000] * 60})
         f = RSIFilter(rsi_min=35, rsi_max=65)
-        r = f.run(df)
+        r = f.run({"ohlcv": df}, WheelState(), {})
         assert r.passed
 
     def test_strong_uptrend_rsi_fails(self):
@@ -114,7 +114,7 @@ class TestRSIFilter:
         # Use steep rising prices to get RSI > 65
         prices = [100 + i * 2.0 for i in range(60)]
         df["close"] = prices
-        r = f.run(df)
+        r = f.run({"ohlcv": df}, WheelState(), {})
         if not r.passed:
             assert r.hard_stop
         # Just verify it runs without error; RSI value may vary
@@ -123,7 +123,7 @@ class TestRSIFilter:
         prices = [100 + (0.3 if i % 2 == 0 else -0.2) for i in range(60)]
         df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices, "volume": [1_000_000] * 60})
         f = RSIFilter()
-        r = f.run(df)
+        r = f.run({"ohlcv": df}, WheelState(), {})
         assert "rsi14" in r.adjustments
 
 
@@ -133,12 +133,12 @@ class TestBollingerFilter:
     def test_soft_flag_does_not_hard_stop(self):
         f = BollingerFilter()
         # Rising prices → price near upper band → unfavorable for Phase A (put sell)
-        r = f.run(_rising_df(), phase="A")
+        r = f.run({"ohlcv": _rising_df()}, WheelState(phase="A"), {})
         assert not r.hard_stop  # never hard-stops
 
     def test_adjustments_contain_bb_fields(self):
         f = BollingerFilter()
-        r = f.run(_rising_df(), phase="A")
+        r = f.run({"ohlcv": _rising_df()}, WheelState(phase="A"), {})
         for key in ("bb_upper", "bb_lower", "bb_percent_b"):
             assert key in r.adjustments, f"Missing key: {key}"
 
@@ -148,19 +148,19 @@ class TestBollingerFilter:
 class TestOptionsChainFilter:
     def test_empty_chain_hard_stops(self):
         f = OptionsChainFilter()
-        r = f.run(pd.DataFrame())
+        r = f.run({"options_chain": pd.DataFrame()}, WheelState(), {})
         assert not r.passed
         assert r.hard_stop
 
     def test_valid_chain_passes(self):
         f = OptionsChainFilter()
-        r = f.run(_make_options())
+        r = f.run({"options_chain": _make_options()}, WheelState(), {})
         assert r.passed
 
     def test_missing_columns_hard_stops(self):
         f = OptionsChainFilter()
         df = pd.DataFrame({"strike": [100.0], "expiry": ["2026-06-20"]})
-        r = f.run(df)
+        r = f.run({"options_chain": df}, WheelState(), {})
         assert not r.passed
         assert r.hard_stop
 
@@ -170,13 +170,13 @@ class TestOptionsChainFilter:
 class TestDeltaTargetFilter:
     def test_finds_put_near_minus_30(self):
         f = DeltaTargetFilter(delta_target=0.30, delta_tolerance=0.05)
-        r = f.run(_make_options(), phase="A")
+        r = f.run({"options_chain": _make_options()}, WheelState(phase="A"), {})
         assert r.passed
         assert abs(r.adjustments["delta_estimate"]) <= 0.35
 
     def test_finds_call_near_plus_30(self):
         f = DeltaTargetFilter(delta_target=0.30, delta_tolerance=0.05)
-        r = f.run(_make_options(), phase="B")
+        r = f.run({"options_chain": _make_options()}, WheelState(phase="B"), {})
         assert r.passed
         assert r.adjustments["delta_estimate"] >= 0.25
 
@@ -187,7 +187,7 @@ class TestDeltaTargetFilter:
             {"strike": 100.0, "expiry": "2026-06-22", "option_type": "put",
              "delta": -0.50, "iv": 0.30, "bid": 2.0, "ask": 2.1, "volume": 100, "dte": 37},
         ])
-        r = f.run(opts, phase="A")
+        r = f.run({"options_chain": opts}, WheelState(phase="A"), {})
         assert not r.passed
         assert r.hard_stop
 
@@ -197,11 +197,11 @@ class TestDeltaTargetFilter:
 class TestVolumeProfileFilter:
     def test_soft_flag_never_hard_stops(self):
         f = VolumeProfileFilter(lookback=20)
-        r = f.run(_rising_df(), phase="A", recommended_strike=90.0)
+        r = f.run({"ohlcv": _rising_df(), "recommended_strike": 90.0}, WheelState(phase="A"), {})
         assert not r.hard_stop
 
     def test_adjustments_contain_hvn_fields(self):
         f = VolumeProfileFilter(lookback=20)
-        r = f.run(_rising_df(), phase="A", recommended_strike=95.0)
+        r = f.run({"ohlcv": _rising_df(), "recommended_strike": 95.0}, WheelState(phase="A"), {})
         assert "volume_node_nearest" in r.adjustments
         assert "volume_node_type" in r.adjustments

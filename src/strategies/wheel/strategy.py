@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import pandas as pd
+import structlog
 from pydantic import BaseModel
 
+import src.logger as _log_setup  # noqa: F401
 from src.strategies.base import FilterResult
 from src.strategies.registry import register
 from src.strategies.wheel.filters import (
@@ -26,6 +28,8 @@ from src.strategies.wheel.filters import (
 )
 from src.strategies.wheel.state import WheelState
 
+logger = structlog.get_logger(__name__)
+
 
 @register("wheel")
 class WheelStrategy:
@@ -33,7 +37,6 @@ class WheelStrategy:
 
     def __init__(self):
         self._cfg: dict[str, Any] = {}
-        # Filters initialised lazily after load_config
         self._phase_gate = PhaseGateFilter()
         self._ema: EMATrendFilter | None = None
         self._rsi: RSIFilter | None = None
@@ -41,6 +44,7 @@ class WheelStrategy:
         self._options: OptionsChainFilter = OptionsChainFilter()
         self._delta: DeltaTargetFilter | None = None
         self._volume: VolumeProfileFilter | None = None
+        self._filters: list = []
 
     # ------------------------------------------------------------------
     # Strategy Protocol methods
@@ -64,6 +68,15 @@ class WheelStrategy:
         self._volume = VolumeProfileFilter(
             lookback=config.get("volume_lookback_bars", 20),
         )
+        self._filters = [
+            self._phase_gate,
+            self._ema,
+            self._rsi,
+            self._bb,
+            self._options,
+            self._delta,
+            self._volume,
+        ]
 
     def get_state_schema(self) -> type[BaseModel]:
         return WheelState
@@ -75,53 +88,28 @@ class WheelStrategy:
         options_chain: pd.DataFrame,
         state: dict[str, Any],
     ) -> list[FilterResult]:
-        if not self._ema:
+        if not self._filters:
             raise RuntimeError("Call load_config() before evaluate()")
 
         wheel_state = WheelState.from_dict(state) if state else WheelState.default()
-        phase: Literal["A", "B"] = wheel_state.phase  # type: ignore[assignment]
+        logger.debug("evaluate_start", ticker=ticker, phase=wheel_state.phase)
+
+        market_data: dict[str, Any] = {
+            "ticker": ticker,
+            "ohlcv": ohlcv,
+            "options_chain": options_chain,
+        }
 
         results: list[FilterResult] = []
+        for f in self._filters:
+            r = f.run(market_data, wheel_state, self._cfg)
+            results.append(r)
+            market_data.update(r.adjustments)
+            if not r.passed and r.hard_stop:
+                logger.debug("evaluate_hard_stop", ticker=ticker, filter=f.name, reason=r.reason)
+                return results
 
-        # --- Pass 1: cheap local filters ---
-
-        r = self._phase_gate.run(ticker, wheel_state)
-        results.append(r)
-        if not r.passed and r.hard_stop:
-            return results
-
-        r = self._ema.run(ohlcv)
-        results.append(r)
-        if not r.passed and r.hard_stop:
-            return results
-
-        r = self._rsi.run(ohlcv)
-        results.append(r)
-        if not r.passed and r.hard_stop:
-            return results
-
-        r = self._bb.run(ohlcv, phase)
-        results.append(r)
-        # BB is soft — always continue
-
-        # --- Pass 2: options chain filters (I/O already done by caller) ---
-
-        r = self._options.run(options_chain)
-        results.append(r)
-        if not r.passed and r.hard_stop:
-            return results
-
-        r = self._delta.run(options_chain, phase)
-        results.append(r)
-        if not r.passed and r.hard_stop:
-            return results
-
-        # Extract strike from delta result for volume profile
-        recommended_strike: float = r.adjustments.get("recommended_strike", 0.0)
-
-        r = self._volume.run(ohlcv, phase, recommended_strike)
-        results.append(r)
-
+        logger.debug("evaluate_complete", ticker=ticker, filters_run=len(results))
         return results
 
 
