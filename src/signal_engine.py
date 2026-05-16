@@ -61,6 +61,7 @@ def run_signal(
     dte_min: int = 30,
     dte_max: int = 45,
     print_output: bool = True,
+    generate_thesis: bool = False,
 ) -> SignalCard:
     """Run the full signal pipeline for a single ticker and return the SignalCard."""
     state = get_ticker_state(state_path, ticker)
@@ -138,6 +139,10 @@ def run_signal(
             risk_flags=risk_flags,
         )
 
+    if generate_thesis and card.phase != "NO_SIGNAL":
+        from src.thesis_generator import generate_thesis as _gen
+        card.thesis_text = _gen(card, iv_history_dir=Path(iv_history_dir))
+
     if print_output:
         print_signal_card(card)
     append_signal_jsonl(card, signals_path)
@@ -152,6 +157,7 @@ def run_signals_batch(
     signals_path: str | Path = "signals.jsonl",
     iv_history_dir: Path = Path("iv_history"),
     print_output: bool = True,
+    generate_thesis: bool = False,
 ) -> list[SignalCard]:
     cfg = load_wheel_config(config_path)
     strategy = WheelStrategy()
@@ -169,6 +175,7 @@ def run_signals_batch(
             dte_min=cfg.get("dte_min", 30),
             dte_max=cfg.get("dte_max", 45),
             print_output=print_output,
+            generate_thesis=generate_thesis,
         )
         cards.append(card)
     return cards
