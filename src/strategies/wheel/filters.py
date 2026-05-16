@@ -4,11 +4,13 @@ Filter order matches the pipeline: Phase Gate → EMA → RSI → BB → Options
 """
 from __future__ import annotations
 
-import datetime
-from typing import Any, Literal
+from typing import Literal
 
 import pandas as pd
+import structlog
+from pydantic import BaseModel
 
+import src.logger as _log_setup  # noqa: F401
 from src.indicator_engine import (
     BollingerResult,
     EMAResult,
@@ -22,6 +24,8 @@ from src.indicator_engine import (
 from src.strategies.base import FilterResult
 from src.strategies.wheel.state import WheelState
 
+logger = structlog.get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Filter 1 — Phase Gate (O(1), no I/O)
@@ -30,20 +34,24 @@ from src.strategies.wheel.state import WheelState
 class PhaseGateFilter:
     name = "phase_gate"
 
-    def run(self, ticker: str, state: WheelState) -> FilterResult:
-        if state.phase not in ("A", "B"):
-            return FilterResult(
+    def run(self, market_data: dict, state: BaseModel, config: dict) -> FilterResult:
+        ticker = market_data["ticker"]
+        if state.phase not in ("A", "B"):  # type: ignore[attr-defined]
+            r = FilterResult(
                 passed=False,
                 filter_name=self.name,
-                reason=f"Unknown phase '{state.phase}' for {ticker}",
+                reason=f"Unknown phase '{state.phase}' for {ticker}",  # type: ignore[attr-defined]
                 hard_stop=True,
             )
-        return FilterResult(
-            passed=True,
-            filter_name=self.name,
-            reason=f"Phase {state.phase} — proceeding",
-            adjustments={"phase": state.phase},
-        )
+        else:
+            r = FilterResult(
+                passed=True,
+                filter_name=self.name,
+                reason=f"Phase {state.phase} — proceeding",  # type: ignore[attr-defined]
+                adjustments={"phase": state.phase},  # type: ignore[attr-defined]
+            )
+        logger.debug("filter_result", filter=self.name, passed=r.passed, hard_stop=r.hard_stop)
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +64,8 @@ class EMATrendFilter:
     def __init__(self, ema_period: int = 50):
         self.ema_period = ema_period
 
-    def run(self, df: pd.DataFrame) -> FilterResult:
+    def run(self, market_data: dict, state: BaseModel, config: dict) -> FilterResult:
+        df: pd.DataFrame = market_data["ohlcv"]
         result: EMAResult = compute_ema(df, self.ema_period)
         current_close = float(df["close"].iloc[-1])
         price_above = current_close > result["ema"]
@@ -68,19 +77,21 @@ class EMATrendFilter:
                 reasons.append(f"price {current_close:.2f} below EMA{self.ema_period} {result['ema']:.2f}")
             if not slope_positive:
                 reasons.append(f"EMA slope {result['slope']:.4f} <= 0 (declining)")
-            return FilterResult(
+            r = FilterResult(
                 passed=False,
                 filter_name=self.name,
                 reason="; ".join(reasons),
                 hard_stop=True,
             )
-
-        return FilterResult(
-            passed=True,
-            filter_name=self.name,
-            reason=f"Price {current_close:.2f} above rising EMA{self.ema_period} {result['ema']:.2f} (slope={result['slope']:.4f})",
-            adjustments={"ema50": result["ema"], "ema50_slope": result["slope"]},
-        )
+        else:
+            r = FilterResult(
+                passed=True,
+                filter_name=self.name,
+                reason=f"Price {current_close:.2f} above rising EMA{self.ema_period} {result['ema']:.2f} (slope={result['slope']:.4f})",
+                adjustments={"ema50": result["ema"], "ema50_slope": result["slope"]},
+            )
+        logger.debug("filter_result", filter=self.name, passed=r.passed, hard_stop=r.hard_stop)
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -95,25 +106,28 @@ class RSIFilter:
         self.rsi_max = rsi_max
         self.period = period
 
-    def run(self, df: pd.DataFrame) -> FilterResult:
+    def run(self, market_data: dict, state: BaseModel, config: dict) -> FilterResult:
+        df: pd.DataFrame = market_data["ohlcv"]
         result: RSIResult = compute_rsi(df, self.period)
         rsi = result["rsi"]
 
         if not (self.rsi_min <= rsi <= self.rsi_max):
             direction = "overbought" if rsi > self.rsi_max else "oversold"
-            return FilterResult(
+            r = FilterResult(
                 passed=False,
                 filter_name=self.name,
                 reason=f"RSI {rsi:.1f} out of range [{self.rsi_min}, {self.rsi_max}] ({direction})",
                 hard_stop=True,
             )
-
-        return FilterResult(
-            passed=True,
-            filter_name=self.name,
-            reason=f"RSI {rsi:.1f} within neutral range [{self.rsi_min}, {self.rsi_max}]",
-            adjustments={"rsi14": rsi},
-        )
+        else:
+            r = FilterResult(
+                passed=True,
+                filter_name=self.name,
+                reason=f"RSI {rsi:.1f} within neutral range [{self.rsi_min}, {self.rsi_max}]",
+                adjustments={"rsi14": rsi},
+            )
+        logger.debug("filter_result", filter=self.name, passed=r.passed, hard_stop=r.hard_stop)
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -122,21 +136,25 @@ class RSIFilter:
 
 class BollingerFilter:
     name = "bb_position"
-    FAVORABLE_THRESHOLD = 0.20  # lower 20% of band = favorable for put sell
+    FAVORABLE_THRESHOLD = 0.20  # lower 20% for Phase A puts; upper 20% for Phase B calls
 
     def __init__(self, period: int = 20, std_dev: float = 2.0):
         self.period = period
         self.std_dev = std_dev
 
-    def run(self, df: pd.DataFrame, phase: Literal["A", "B"]) -> FilterResult:
+    def run(self, market_data: dict, state: BaseModel, config: dict) -> FilterResult:
+        df: pd.DataFrame = market_data["ohlcv"]
+        phase: str = state.phase  # type: ignore[attr-defined]
         result: BollingerResult = compute_bollinger(df, self.period, self.std_dev)
         pct_b = result["percent_b"]
+        # Clamp to [0, 1] before favorability check so out-of-band prices don't skew logic.
+        pct_b_clamped = max(0.0, min(1.0, pct_b))
 
         if phase == "A":
-            favorable = pct_b <= self.FAVORABLE_THRESHOLD
+            favorable = 0.0 <= pct_b_clamped <= self.FAVORABLE_THRESHOLD
             position_label = f"%B={pct_b:.2f} ({'favorable' if favorable else 'unfavorable'} for put sell)"
         else:
-            favorable = pct_b >= (1.0 - self.FAVORABLE_THRESHOLD)
+            favorable = (1.0 - self.FAVORABLE_THRESHOLD) <= pct_b_clamped <= 1.0
             position_label = f"%B={pct_b:.2f} ({'favorable' if favorable else 'unfavorable'} for call sell)"
 
         adjustments = {
@@ -148,20 +166,22 @@ class BollingerFilter:
         }
 
         if not favorable:
-            return FilterResult(
+            r = FilterResult(
                 passed=True,  # soft — does not block
                 filter_name=self.name,
                 reason=f"BB position unfavorable — {position_label}",
                 hard_stop=False,
                 adjustments={**adjustments, "soft_flag": "bb_unfavorable"},
             )
-
-        return FilterResult(
-            passed=True,
-            filter_name=self.name,
-            reason=f"BB position favorable — {position_label}",
-            adjustments=adjustments,
-        )
+        else:
+            r = FilterResult(
+                passed=True,
+                filter_name=self.name,
+                reason=f"BB position favorable — {position_label}",
+                adjustments=adjustments,
+            )
+        logger.debug("filter_result", filter=self.name, passed=r.passed, bb_favorable=favorable)
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -171,30 +191,33 @@ class BollingerFilter:
 class OptionsChainFilter:
     name = "options_chain"
 
-    def run(self, options_chain: pd.DataFrame) -> FilterResult:
+    def run(self, market_data: dict, state: BaseModel, config: dict) -> FilterResult:
+        options_chain: pd.DataFrame = market_data["options_chain"]
         if options_chain.empty:
-            return FilterResult(
+            r = FilterResult(
                 passed=False,
                 filter_name=self.name,
                 reason="No options chain data returned for requested DTE window",
                 hard_stop=True,
             )
-
-        required_cols = {"strike", "expiry", "delta", "iv"}
-        missing = required_cols - set(options_chain.columns)
-        if missing:
-            return FilterResult(
-                passed=False,
-                filter_name=self.name,
-                reason=f"Options chain missing required columns: {missing}",
-                hard_stop=True,
-            )
-
-        return FilterResult(
-            passed=True,
-            filter_name=self.name,
-            reason=f"Options chain available — {len(options_chain)} contracts",
-        )
+        else:
+            required_cols = {"strike", "expiry", "delta", "iv"}
+            missing = required_cols - set(options_chain.columns)
+            if missing:
+                r = FilterResult(
+                    passed=False,
+                    filter_name=self.name,
+                    reason=f"Options chain missing required columns: {missing}",
+                    hard_stop=True,
+                )
+            else:
+                r = FilterResult(
+                    passed=True,
+                    filter_name=self.name,
+                    reason=f"Options chain available — {len(options_chain)} contracts",
+                )
+        logger.debug("filter_result", filter=self.name, passed=r.passed, hard_stop=r.hard_stop)
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -208,23 +231,23 @@ class DeltaTargetFilter:
         self.delta_target = delta_target
         self.delta_tolerance = delta_tolerance
 
-    def run(
-        self,
-        options_chain: pd.DataFrame,
-        phase: Literal["A", "B"],
-    ) -> FilterResult:
+    def run(self, market_data: dict, state: BaseModel, config: dict) -> FilterResult:
+        options_chain: pd.DataFrame = market_data["options_chain"]
+        phase: str = state.phase  # type: ignore[attr-defined]
         option_type = "put" if phase == "A" else "call"
         target_sign = -1 if phase == "A" else 1
         target_delta = target_sign * self.delta_target
 
         chain = options_chain[options_chain["option_type"] == option_type].copy()
         if chain.empty:
-            return FilterResult(
+            r = FilterResult(
                 passed=False,
                 filter_name=self.name,
                 reason=f"No {option_type} options in chain",
                 hard_stop=True,
             )
+            logger.debug("filter_result", filter=self.name, passed=False, hard_stop=True)
+            return r
 
         chain["delta_distance"] = (chain["delta"] - target_delta).abs()
         best = chain.loc[chain["delta_distance"].idxmin()]
@@ -232,7 +255,7 @@ class DeltaTargetFilter:
         distance = float(best["delta_distance"])
 
         if distance > self.delta_tolerance:
-            return FilterResult(
+            r = FilterResult(
                 passed=False,
                 filter_name=self.name,
                 reason=(
@@ -242,25 +265,26 @@ class DeltaTargetFilter:
                 ),
                 hard_stop=True,
             )
-
-        expiry = best["expiry"]
-        dte = int(best["dte"]) if "dte" in best.index else None
-
-        return FilterResult(
-            passed=True,
-            filter_name=self.name,
-            reason=(
-                f"Delta match: {option_type} strike {best['strike']:.2f}, "
-                f"delta={actual_delta:.3f}, expiry={expiry}, DTE={dte}"
-            ),
-            adjustments={
-                "recommended_strike": float(best["strike"]),
-                "recommended_expiry": str(expiry),
-                "delta_estimate": actual_delta,
-                "iv": float(best["iv"]) if pd.notna(best.get("iv")) else None,
-                "dte": dte,
-            },
-        )
+        else:
+            expiry = best["expiry"]
+            dte = int(best["dte"]) if "dte" in best.index else None
+            r = FilterResult(
+                passed=True,
+                filter_name=self.name,
+                reason=(
+                    f"Delta match: {option_type} strike {best['strike']:.2f}, "
+                    f"delta={actual_delta:.3f}, expiry={expiry}, DTE={dte}"
+                ),
+                adjustments={
+                    "recommended_strike": float(best["strike"]),
+                    "recommended_expiry": str(expiry),
+                    "delta_estimate": actual_delta,
+                    "iv": float(best["iv"]) if pd.notna(best.get("iv")) else None,
+                    "dte": dte,
+                },
+            )
+        logger.debug("filter_result", filter=self.name, passed=r.passed, hard_stop=r.hard_stop)
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -274,12 +298,11 @@ class VolumeProfileFilter:
     def __init__(self, lookback: int = 20):
         self.lookback = lookback
 
-    def run(
-        self,
-        df: pd.DataFrame,
-        phase: Literal["A", "B"],
-        recommended_strike: float,
-    ) -> FilterResult:
+    def run(self, market_data: dict, state: BaseModel, config: dict) -> FilterResult:
+        df: pd.DataFrame = market_data["ohlcv"]
+        phase: str = state.phase  # type: ignore[attr-defined]
+        recommended_strike: float = market_data.get("recommended_strike", 0.0)
+
         result: VolumeProfileResult = compute_volume_profile(df, self.lookback)
         hvn = result["hvn_price"]
         hvn_type = result["hvn_type"]
@@ -294,14 +317,12 @@ class VolumeProfileFilter:
         }
 
         if phase == "A":
-            # Put sell: strike should be BELOW nearest HVN support
             anchor_ok = recommended_strike < hvn and hvn_type == "support"
         else:
-            # Call sell: strike should be NEAR HVN ceiling (resistance)
             anchor_ok = hvn_type == "resistance" and not diverges
 
         if not anchor_ok or diverges:
-            return FilterResult(
+            r = FilterResult(
                 passed=True,  # soft — does not block
                 filter_name=self.name,
                 reason=(
@@ -311,10 +332,12 @@ class VolumeProfileFilter:
                 hard_stop=False,
                 adjustments={**adjustments, "soft_flag": "volume_node_divergence"},
             )
-
-        return FilterResult(
-            passed=True,
-            filter_name=self.name,
-            reason=f"Strike {recommended_strike:.2f} anchored by HVN {hvn:.2f} ({hvn_type})",
-            adjustments=adjustments,
-        )
+        else:
+            r = FilterResult(
+                passed=True,
+                filter_name=self.name,
+                reason=f"Strike {recommended_strike:.2f} anchored by HVN {hvn:.2f} ({hvn_type})",
+                adjustments=adjustments,
+            )
+        logger.debug("filter_result", filter=self.name, passed=r.passed, divergence_pct=round(divergence * 100, 2))
+        return r

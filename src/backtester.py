@@ -167,10 +167,11 @@ class BacktestEngine:
                 current_date += timedelta(days=7)
                 continue
 
-            if not ema_f.run(hist).passed:
+            market_data = {"ohlcv": hist}
+            if not ema_f.run(market_data, state=None, config={}).passed:
                 current_date += timedelta(days=1)
                 continue
-            if not rsi_f.run(hist).passed:
+            if not rsi_f.run(market_data, state=None, config={}).passed:
                 current_date += timedelta(days=1)
                 continue
 
