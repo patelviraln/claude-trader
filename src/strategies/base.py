@@ -11,6 +11,13 @@ class FilterResult(BaseModel):
     adjustments: dict[str, Any] = {}
 
 
+class Filter(Protocol):
+    name: str
+
+    def run(self, market_data: dict, state: BaseModel, config: dict) -> FilterResult:
+        ...
+
+
 class Strategy(Protocol):
     name: str
 

@@ -5,9 +5,14 @@ All functions accept a pandas DataFrame with OHLCV columns and return typed dict
 from typing import TypedDict
 
 import pandas as pd
+import structlog
 import ta.trend as trend_ind
 import ta.momentum as momentum_ind
 import ta.volatility as vol_ind
+
+import src.logger as _log_setup  # noqa: F401
+
+logger = structlog.get_logger(__name__)
 
 
 class EMAResult(TypedDict):
@@ -40,13 +45,16 @@ def compute_ema(df: pd.DataFrame, period: int) -> EMAResult:
     window = ema_series.iloc[-5:]
     slope = float((window.iloc[-1] - window.iloc[0]) / (len(window) - 1)) if len(window) >= 2 else 0.0
 
+    logger.debug("indicator_computed", indicator="ema", ema=round(ema_val, 4), slope=round(slope, 6))
     return EMAResult(ema=ema_val, slope=slope)
 
 
 def compute_rsi(df: pd.DataFrame, period: int = 14) -> RSIResult:
     """Compute RSI on the close column."""
     rsi_series = momentum_ind.RSIIndicator(close=df["close"], window=period).rsi()
-    return RSIResult(rsi=float(rsi_series.iloc[-1]))
+    rsi_val = float(rsi_series.iloc[-1])
+    logger.debug("indicator_computed", indicator="rsi", rsi=round(rsi_val, 2))
+    return RSIResult(rsi=rsi_val)
 
 
 def compute_bollinger(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0) -> BollingerResult:
@@ -57,6 +65,7 @@ def compute_bollinger(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0) 
     lower = float(bb.bollinger_lband().iloc[-1])
     pct_b = float(bb.bollinger_pband().iloc[-1])  # (close - lower) / (upper - lower)
 
+    logger.debug("indicator_computed", indicator="bollinger", percent_b=round(pct_b, 4))
     return BollingerResult(upper=upper, mid=mid, lower=lower, percent_b=pct_b)
 
 
@@ -80,4 +89,5 @@ def compute_volume_profile(df: pd.DataFrame, lookback: int = 20) -> VolumeProfil
     current_close = float(df["close"].iloc[-1])
     hvn_type = "support" if hvn_price <= current_close else "resistance"
 
+    logger.debug("indicator_computed", indicator="volume_profile", hvn_price=hvn_price, hvn_type=hvn_type)
     return VolumeProfileResult(hvn_price=hvn_price, hvn_type=hvn_type, histogram=histogram)

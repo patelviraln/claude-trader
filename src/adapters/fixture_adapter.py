@@ -1,7 +1,11 @@
+import datetime
 import json
 from pathlib import Path
 
 import pandas as pd
+
+# Pinned to the date fixtures were generated — keeps DTE calculations deterministic.
+FIXTURE_REFERENCE_DATE = datetime.date(2026, 5, 16)
 
 
 class FixtureAdapter:
@@ -40,8 +44,6 @@ class FixtureAdapter:
         df["iv"] = df["iv"].astype(float)
 
         # Filter to requested DTE window
-        import datetime
-        today = datetime.date.today()
-        df["dte"] = (pd.to_datetime(df["expiry"]) - pd.Timestamp(today)).dt.days
+        df["dte"] = (pd.to_datetime(df["expiry"]) - pd.Timestamp(FIXTURE_REFERENCE_DATE)).dt.days
         df = df[(df["dte"] >= dte_min) & (df["dte"] <= dte_max)]
         return df.reset_index(drop=True)

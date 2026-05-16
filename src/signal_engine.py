@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import structlog
+
+import src.logger as _log_setup  # noqa: F401
 from src.adapters.base import DataAdapter
+
+logger = structlog.get_logger(__name__)
 from src.signal_output import (
     IndicatorReadings,
     SignalCard,
@@ -63,6 +68,7 @@ def run_signal(
 
     if hard_stopped:
         stop_result = next(r for r in filter_results if not r.passed and r.hard_stop)
+        logger.info("signal_blocked", ticker=ticker, filter=stop_result.filter_name, reason=stop_result.reason)
         card = SignalCard(
             ticker=ticker,
             phase="NO_SIGNAL",
@@ -72,10 +78,17 @@ def run_signal(
     else:
         adj = _collect_adjustments(filter_results)
         soft_flags = _collect_soft_flags(filter_results)
-        delta_distance = abs(adj.get("delta_estimate", 0.0)) - 0.30
+        delta_estimate: float | None = adj.get("delta_estimate")
+        if delta_estimate is None:
+            raise RuntimeError(
+                "delta_estimate missing from combined filter adjustments; "
+                "verify DeltaTargetFilter ran and passed before signal assembly."
+            )
+        delta_distance = abs(delta_estimate) - 0.30
         tier, rationale = compute_confidence_tier(soft_flags, abs(delta_distance), adj.get("iv"))
 
         signal_phase = "SELL_PUT" if phase == "A" else "SELL_CALL"
+        logger.info("signal_emitted", ticker=ticker, phase=signal_phase, tier=tier)
 
         readings: IndicatorReadings | None = None
         if all(k in adj for k in ("ema50", "rsi14", "bb_upper", "bb_lower", "bb_percent_b")):
