@@ -1,7 +1,9 @@
 import datetime
 import json
+from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 # Pinned to the date fixtures were generated — keeps DTE calculations deterministic.
@@ -47,3 +49,34 @@ class FixtureAdapter:
         df["dte"] = (pd.to_datetime(df["expiry"]) - pd.Timestamp(FIXTURE_REFERENCE_DATE)).dt.days
         df = df[(df["dte"] >= dte_min) & (df["dte"] <= dte_max)]
         return df.reset_index(drop=True)
+
+    def get_historical_ohlcv(self, ticker: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """Return synthetic OHLCV for backtesting. Seeded by ticker name for reproducibility."""
+        seed = abs(hash(ticker)) % (2 ** 31)
+        rng = np.random.default_rng(seed=seed)
+
+        dates = pd.bdate_range(start=str(start_date), end=str(end_date), freq="B", tz="UTC")
+        n = len(dates)
+        if n == 0:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        # Upward-biased random walk so EMA/RSI filters regularly pass
+        start_price = {"WXYZ": 150.0, "CALLX": 200.0}.get(ticker, 100.0)
+        daily_ret = rng.normal(0.0008, 0.012, n)
+        closes = start_price * np.exp(np.cumsum(daily_ret))
+
+        noise = rng.uniform(0.997, 1.003, n)
+        opens = closes * noise
+        highs = closes * rng.uniform(1.002, 1.015, n)
+        lows = closes * rng.uniform(0.985, 0.998, n)
+        volumes = rng.integers(800_000, 6_000_000, n).astype(float)
+
+        df = pd.DataFrame({
+            "open":   np.round(opens, 2),
+            "high":   np.round(highs, 2),
+            "low":    np.round(lows, 2),
+            "close":  np.round(closes, 2),
+            "volume": volumes,
+        }, index=dates)
+        df.index.name = "timestamp"
+        return df

@@ -41,11 +41,14 @@ class SignalCard(BaseModel):
     delta_estimate: float | None = None
     iv_rank: float | None = None
     indicator_readings: IndicatorReadings | None = None
+    option_mid: float | None = None
     thesis_text: str = ""
     confidence_tier: Literal["HIGH", "MEDIUM", "LOW"] | None = None
     confidence_rationale: str = ""
     risk_flags: list[str] = Field(default_factory=list)
     no_signal_reason: str | None = None
+    order_id: str | None = None
+    order_status: str | None = None
 
     def to_json(self) -> str:
         return self.model_dump_json(indent=None)
@@ -154,12 +157,16 @@ def print_signal_card(card: SignalCard) -> None:
         table.add_row("BB %B", f"{ir.bb_percent_b:.2f}")
         table.add_row("HVN", f"${ir.volume_node_nearest:.2f}  ({ir.volume_node_type})")
 
+    if card.option_mid is not None:
+        table.add_row("Option Mid", f"${card.option_mid:.2f}")
     if card.thesis_text:
         table.add_row("Thesis", card.thesis_text)
     if card.confidence_rationale:
         table.add_row("Rationale", card.confidence_rationale)
     if card.risk_flags:
         table.add_row("[yellow]Risk flags[/yellow]", ", ".join(card.risk_flags))
+    if card.order_id:
+        table.add_row("[bold green]Order ID[/bold green]", f"{card.order_id}  [{card.order_status}]")
 
     panel = Panel(table, title=header, border_style=phase_color)
     _console.print(panel)

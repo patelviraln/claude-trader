@@ -10,3 +10,14 @@ bb_period = 20
 bb_std_dev = 2.0
 volume_lookback_bars = 20
 soft_flag_confidence_penalty = "HIGH_TO_MEDIUM"
+
+[scheduler]
+# Tickers to scan on each daily run
+tickers = ["NVDA", "AAPL", "MSFT"]
+# Adapter to use: "alpaca" for live, "fixture" for testing
+adapter = "alpaca"
+# Daily run time in US/Eastern (24-hour clock); 9:35 = 5 min after market open
+run_hour = 9
+run_minute = 35
+# Timezone for the cron trigger
+timezone = "America/New_York"
