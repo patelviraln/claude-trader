@@ -7,6 +7,7 @@ import pytest
 from src.indicator_engine import (
     compute_bollinger,
     compute_ema,
+    compute_iv_rank,
     compute_rsi,
     compute_volume_profile,
 )
@@ -109,3 +110,33 @@ class TestComputeVolumeProfile:
         df = _rising_df()
         result = compute_volume_profile(df, lookback=20)
         assert result["hvn_price"] > 0
+
+
+class TestComputeIVRank:
+    def test_returns_none_with_single_sample(self):
+        assert compute_iv_rank(0.30, [0.30]) is None
+
+    def test_returns_none_with_empty_series(self):
+        assert compute_iv_rank(0.30, []) is None
+
+    def test_current_at_52w_high_returns_100(self):
+        series = [0.20, 0.25, 0.30, 0.35, 0.40]
+        assert compute_iv_rank(0.40, series) == 100.0
+
+    def test_current_at_52w_low_returns_0(self):
+        series = [0.20, 0.25, 0.30, 0.35, 0.40]
+        assert compute_iv_rank(0.20, series) == 0.0
+
+    def test_midpoint_returns_50(self):
+        series = [0.20, 0.40]
+        assert compute_iv_rank(0.30, series) == 50.0
+
+    def test_flat_series_returns_50(self):
+        series = [0.25, 0.25, 0.25]
+        assert compute_iv_rank(0.25, series) == 50.0
+
+    def test_result_bounded_0_to_100(self):
+        series = [0.15, 0.20, 0.25, 0.35, 0.45]
+        rank = compute_iv_rank(0.30, series)
+        assert rank is not None
+        assert 0.0 <= rank <= 100.0
