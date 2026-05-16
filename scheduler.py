@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.logger import setup_logging
+from src.signal_engine import run_signals_batch
 import structlog
 
 log = structlog.get_logger()
@@ -61,8 +62,6 @@ def run_job(config_path: Path) -> None:
     except Exception as exc:
         log.error("scheduler.adapter_error", error=str(exc))
         return
-
-    from src.signal_engine import run_signals_batch
 
     results = {"ok": [], "error": []}
     for ticker in tickers:
