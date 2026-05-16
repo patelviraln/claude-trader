@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}{{ ticker }} — Wheel Trader{% endblock %}
+
+{% block content %}
+<a href="/" class="back-link">← Dashboard</a>
+<h1>{{ ticker }}
+  <span class="badge badge-{{ state.get('phase','A') }}" style="font-size:13px;vertical-align:middle;">Phase {{ state.get('phase','A') }}</span>
+</h1>
+
+<!-- Stats row -->
+<div class="stat-grid">
+  <div class="stat">
+    <div class="stat-label">Phase</div>
+    <div class="stat-value">{{ state.get('phase', 'A') }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Shares Held</div>
+    <div class="stat-value">{{ state.get('shares_held', 0) }}</div>
+  </div>
+  {% if state.get('cost_basis') %}
+  <div class="stat">
+    <div class="stat-label">Cost Basis</div>
+    <div class="stat-value">${{ "%.2f"|format(state.cost_basis) }}</div>
+  </div>
+  {% endif %}
+  {% if last_signal %}
+  <div class="stat">
+    <div class="stat-label">Last Price</div>
+    <div class="stat-value">${{ "%.2f"|format(last_signal.underlying_price) }}</div>
+  </div>
+  {% if last_signal.iv_rank is not none %}
+  <div class="stat">
+    <div class="stat-label">IV Rank</div>
+    <div class="stat-value">{{ "%.1f"|format(last_signal.iv_rank) }}%</div>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+
+<!-- IV History Chart -->
+{% if iv_series %}
+<div class="chart-box">
+  <h2>IV History</h2>
+  <canvas id="iv-chart" height="80"></canvas>
+</div>
+{% endif %}
+
+<!-- Signal History -->
+<h2>Signal History</h2>
+{% if signals %}
+<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:24px;">
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Signal</th>
+      <th>Strike</th>
+      <th>Expiry</th>
+      <th>Delta</th>
+      <th>IV Rank</th>
+      <th>Mid</th>
+      <th>Confidence</th>
+      <th>Order</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in signals %}
+  <tr>
+    <td style="color:var(--muted);font-size:12px;">{{ s.signal_timestamp[:16].replace('T',' ') }}</td>
+    <td>
+      {% if s.phase == 'SELL_PUT' %}
+        <span class="badge badge-put">SELL PUT</span>
+      {% elif s.phase == 'SELL_CALL' %}
+        <span class="badge badge-call">SELL CALL</span>
+      {% else %}
+        <span class="badge badge-none">NO SIGNAL</span>
+      {% endif %}
+    </td>
+    <td>{% if s.recommended_strike %}${{ "%.2f"|format(s.recommended_strike) }}{% else %}—{% endif %}</td>
+    <td style="font-size:12px;">{% if s.recommended_expiry %}{{ s.recommended_expiry }}{% else %}—{% endif %}</td>
+    <td>{% if s.delta_estimate is not none %}{{ "%+.3f"|format(s.delta_estimate) }}{% else %}—{% endif %}</td>
+    <td>{% if s.iv_rank is not none %}{{ "%.1f"|format(s.iv_rank) }}%{% else %}—{% endif %}</td>
+    <td>{% if s.option_mid %}${{ "%.2f"|format(s.option_mid) }}{% else %}—{% endif %}</td>
+    <td>
+      {% if s.confidence_tier %}
+        <span class="badge badge-{{ s.confidence_tier }}">{{ s.confidence_tier }}</span>
+      {% else %}—{% endif %}
+    </td>
+    <td style="font-size:11px;color:var(--green);">
+      {% if s.order_id %}{{ s.order_id[:8] }}…{% else %}—{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p style="color:var(--muted);">No signals recorded yet for {{ ticker }}.</p>
+{% endif %}
+
+<!-- Phase Transition -->
+<h2>Phase Transition</h2>
+<div style="display:flex;gap:12px;">
+  {% if state.get('phase','A') == 'A' %}
+  <form method="post" action="/transition/assign" style="display:flex;gap:8px;align-items:center;">
+    <input type="hidden" name="ticker" value="{{ ticker }}">
+    <input type="number" name="cost_basis" step="0.01" min="0.01" placeholder="Cost basis"
+           style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;width:150px;">
+    <button type="submit" class="btn btn-green">Record Assignment (A → B)</button>
+  </form>
+  {% else %}
+  <form method="post" action="/transition/exit">
+    <input type="hidden" name="ticker" value="{{ ticker }}">
+    <button type="submit" class="btn btn-red">Record Exit (B → A)</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if iv_series %}
+<script>
+const labels = {{ iv_dates | tojson }};
+const data   = {{ iv_values | tojson }};
+new Chart(document.getElementById('iv-chart'), {
+  type: 'line',
+  data: {
+    labels,
+    datasets: [{
+      label: 'IV',
+      data,
+      borderColor: '#58a6ff',
+      backgroundColor: 'rgba(88,166,255,.08)',
+      borderWidth: 2,
+      pointRadius: data.length < 30 ? 4 : 2,
+      tension: 0.3,
+      fill: true,
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => `IV: ${(ctx.parsed.y * 100).toFixed(1)}%`
+        }
+      }
+    },
+    scales: {
+      x: { ticks: { color: '#8b949e', maxTicksLimit: 10 }, grid: { color: '#21262d' } },
+      y: {
+        ticks: { color: '#8b949e', callback: v => (v*100).toFixed(0)+'%' },
+        grid: { color: '#21262d' }
+      }
+    }
+  }
+});
+</script>
+{% endif %}
+{% endblock %}
