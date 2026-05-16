@@ -42,9 +42,25 @@ PHASE_COLORS  = {"A": "#58a6ff", "B": "#bc8cff"}
 SIGNAL_COLORS = {"SELL_PUT": "#3fb950", "SELL_CALL": "#bc8cff", "NO_SIGNAL": "#8b949e"}
 TIER_COLORS   = {"HIGH": "#3fb950", "MEDIUM": "#d29922", "LOW": "#f85149"}
 
+FIXTURES_DIR = Path("fixtures")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _fixture_tickers() -> list[str]:
+    """Return tickers that have both ohlcv and options fixture files."""
+    if not FIXTURES_DIR.exists():
+        return []
+    ohlcv   = {p.stem.replace("_ohlcv", "") for p in FIXTURES_DIR.glob("*_ohlcv.json")}
+    options = {p.stem.replace("_options", "") for p in FIXTURES_DIR.glob("*_options.json")}
+    return sorted(ohlcv & options)
+
+
+def _alpaca_available() -> bool:
+    import os
+    return bool(os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_SECRET_KEY"))
 
 def _badge(text: str, color: str) -> str:
     return (
@@ -116,7 +132,10 @@ def page_dashboard() -> None:
             if state.get("cost_basis"):
                 st.caption(f"Cost basis ${state['cost_basis']:.2f}  ·  {state.get('assignment_date','')}")
 
-            st.link_button("View Details", f"/?page=ticker&t={ticker}", use_container_width=True)
+            if st.button("View Details", key=f"detail_{ticker}", use_container_width=True):
+                st.session_state["_pending_nav"] = "Ticker Detail"
+                st.session_state["_detail_ticker"] = ticker
+                st.rerun()
             st.divider()
 
 
@@ -130,10 +149,8 @@ def page_ticker_detail() -> None:
         st.info("No tickers tracked yet.")
         return
 
-    # Allow pre-selection via query param
-    params  = st.query_params
-    default = params.get("t", tickers[0]) if tickers else None
-    default_idx = tickers.index(default) if default in tickers else 0
+    preselect = st.session_state.pop("_detail_ticker", None)
+    default_idx = tickers.index(preselect) if preselect in tickers else 0
 
     ticker = st.selectbox("Ticker", tickers, index=default_idx)
     st.title(ticker)
@@ -233,13 +250,25 @@ def page_run_signals() -> None:
     st.caption("Scan tickers through the 7-filter pipeline and optionally place paper orders.")
 
     cfg     = _load_config()
-    sched   = cfg.get("scheduler", {})
     tracked = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
-    default_tickers = sched.get("tickers", tracked[:3] if tracked else [])
+    fix_tickers = _fixture_tickers()
+    adapters = (["alpaca"] if _alpaca_available() else []) + ["fixture"]
+
+    adapter = st.radio("Adapter", adapters, horizontal=True, key="rs_adapter")
+    if adapter == "fixture":
+        pool = [t for t in tracked if t in fix_tickers] or fix_tickers
+        if not pool:
+            st.warning("No fixture files found in fixtures/.")
+        missing = [t for t in tracked if t not in fix_tickers]
+        if missing:
+            st.caption(f"No fixture for: {', '.join(missing)} — add fixture files or use Alpaca.")
+    else:
+        pool = tracked
+    if not _alpaca_available():
+        st.caption("Alpaca hidden — set ALPACA_API_KEY + ALPACA_SECRET_KEY in .env to enable.")
 
     with st.form("run_form"):
-        tickers  = st.multiselect("Tickers", options=tracked or default_tickers, default=[t for t in default_tickers if t in tracked] or default_tickers)
-        adapter  = st.radio("Adapter", ["alpaca", "fixture"], horizontal=True)
+        tickers  = st.multiselect("Tickers", options=pool, default=[t for t in pool[:5] if t in pool])
         col1, col2 = st.columns(2)
         execute  = col1.checkbox("Place paper orders  (--execute)", value=False)
         thesis   = col2.checkbox("Generate AI thesis  (--thesis)", value=False)
@@ -302,6 +331,89 @@ def page_run_signals() -> None:
 # ---------------------------------------------------------------------------
 # Page: Configuration (Phase 7)
 # ---------------------------------------------------------------------------
+
+def page_backtest() -> None:
+    st.title("Backtest")
+    st.caption("Walk-forward backtest using 30-day realized vol + Black-Scholes pricing.")
+
+    cfg = _load_config()
+    wheel_cfg = cfg.get("wheel", cfg)
+    tracked   = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
+    fix_tickers = _fixture_tickers()
+    adapters  = (["alpaca"] if _alpaca_available() else []) + ["fixture"]
+
+    col1, col2 = st.columns(2)
+    adapter = col1.radio("Adapter", adapters, horizontal=True, key="bt_adapter")
+    if adapter == "fixture":
+        pool = fix_tickers or ["WXYZ"]
+    else:
+        pool = tracked or ["AAPL"]
+    ticker = col2.selectbox("Ticker", options=pool, key="bt_ticker")
+    if not _alpaca_available():
+        st.caption("Alpaca hidden — set ALPACA_API_KEY + ALPACA_SECRET_KEY in .env to enable.")
+
+    with st.form("backtest_form"):
+        col3, col4 = st.columns(2)
+        start   = col3.date_input("Start date", value=date(2024, 1, 1))
+        end     = col4.date_input("End date",   value=date(2024, 12, 31))
+        phase   = st.radio("Phase", ["A — Sell Put", "B — Sell Call"], horizontal=True)
+        run     = st.form_submit_button("Run Backtest", type="primary")
+
+    if run:
+        phase_key = "A" if phase.startswith("A") else "B"
+        with st.spinner(f"Running backtest for {ticker} ({start} → {end})…"):
+            try:
+                from src.backtester import BacktestEngine
+                from src.adapters.fixture_adapter import FixtureAdapter
+                if adapter == "fixture":
+                    data_adapter = FixtureAdapter()
+                else:
+                    from src.adapters.alpaca_adapter import AlpacaPaperAdapter
+                    data_adapter = AlpacaPaperAdapter()
+
+                engine  = BacktestEngine(data_adapter, {"wheel": wheel_cfg})
+                summary = engine.run(ticker, start, end, phase=phase_key)
+
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Total trades",    summary.total_trades)
+                m2.metric("Closed trades",   summary.closed_trades)
+                m3.metric("Win rate",        f"{summary.win_rate:.1f}%")
+                m4.metric("Total premium",   f"${summary.total_premium:.2f}")
+                m5.metric("Total P&L",       f"${summary.total_pnl:.2f}")
+
+                if summary.trades:
+                    closed = [t for t in summary.trades if t.outcome != "OPEN"]
+                    if closed:
+                        cumulative = []
+                        running = 0.0
+                        for t in closed:
+                            running += t.pnl
+                            cumulative.append({"date": t.expiry_date, "pnl": round(running, 2)})
+                        eq_df = pd.DataFrame(cumulative)
+                        fig = go.Figure(go.Scatter(x=eq_df["date"], y=eq_df["pnl"],
+                                                   mode="lines+markers", name="Equity"))
+                        fig.update_layout(title="Cumulative P&L", xaxis_title="Expiry",
+                                          yaxis_title="P&L ($/share)", height=350)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    rows = [
+                        {
+                            "Entry":     t.entry_date,
+                            "Expiry":    t.expiry_date,
+                            "Strike":    t.strike,
+                            "Premium":   t.estimated_premium,
+                            "IV":        t.iv_at_entry,
+                            "Outcome":   t.outcome,
+                            "P&L":       t.pnl,
+                        }
+                        for t in summary.trades
+                    ]
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                else:
+                    st.info("No trades generated — try a wider date range or relaxed config.")
+            except Exception as exc:
+                st.error(f"Backtest failed: {exc}")
+
 
 def page_configuration() -> None:
     st.title("Configuration")
@@ -495,9 +607,16 @@ def main() -> None:
     st.sidebar.caption("Wheel options strategy system")
     st.sidebar.divider()
 
+    pages = ["Dashboard", "Ticker Detail", "Run Signals", "Backtest", "Configuration"]
+
+    # Programmatic navigation — must be applied BEFORE the radio widget is instantiated
+    if "_pending_nav" in st.session_state:
+        st.session_state["_nav"] = st.session_state.pop("_pending_nav")
+
     page = st.sidebar.radio(
         "Navigate",
-        ["Dashboard", "Ticker Detail", "Run Signals", "Configuration"],
+        pages,
+        key="_nav",
         label_visibility="collapsed",
     )
 
@@ -509,6 +628,8 @@ def main() -> None:
         page_ticker_detail()
     elif page == "Run Signals":
         page_run_signals()
+    elif page == "Backtest":
+        page_backtest()
     elif page == "Configuration":
         page_configuration()
 
