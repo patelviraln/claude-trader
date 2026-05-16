@@ -40,6 +40,7 @@ class AlpacaPaperAdapter:
             timeframe=TimeFrame.Day,
             start=start,
             end=end,
+            feed="iex",
         )
         bars_response = self._stock_client.get_stock_bars(request)
         df = bars_response.df.loc[ticker] if ticker in bars_response.df.index.get_level_values(0) else pd.DataFrame()
@@ -65,17 +66,27 @@ class AlpacaPaperAdapter:
 
         records = []
         for symbol, snapshot in chain.items():
+            # Parse OCC symbol: e.g. NVDA260626C00420000
+            # Format: {underlying}{YYMMDD}{C|P}{strike*1000 zero-padded to 8 digits}
+            try:
+                suffix = symbol[len(ticker):]          # "260626C00420000"
+                expiry_str = suffix[:6]                # "260626"
+                opt_type = "call" if suffix[6] == "C" else "put"
+                strike = int(suffix[7:]) / 1000.0
+                expiry = dt.date(2000 + int(expiry_str[:2]), int(expiry_str[2:4]), int(expiry_str[4:6]))
+            except (ValueError, IndexError):
+                continue
             greeks = snapshot.greeks
             records.append({
                 "symbol": symbol,
-                "strike": snapshot.details.strike_price,
-                "expiry": snapshot.details.expiration_date,
-                "option_type": snapshot.details.type,
+                "strike": strike,
+                "expiry": expiry,
+                "option_type": opt_type,
                 "delta": greeks.delta if greeks else None,
                 "iv": snapshot.implied_volatility,
                 "bid": snapshot.latest_quote.bid_price if snapshot.latest_quote else None,
                 "ask": snapshot.latest_quote.ask_price if snapshot.latest_quote else None,
-                "volume": snapshot.day.volume if snapshot.day else None,
+                "volume": None,
             })
 
         df = pd.DataFrame(records)
