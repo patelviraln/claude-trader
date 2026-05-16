@@ -147,21 +147,18 @@ Calls `claude-opus-4-7` with adaptive thinking and a cached system prompt. Retur
 ## Dashboard
 
 ```bash
-python app.py
-# open http://127.0.0.1:8000
+streamlit run streamlit_app.py
+# opens http://localhost:8501
 ```
 
-Or with auto-reload for development:
+The dashboard has four pages (sidebar navigation):
 
-```bash
-uvicorn app:app --reload
-```
-
-The dashboard provides:
-
-- **Ticker cards** — phase badge, last signal type, underlying price, IV rank, option mid, confidence tier, order ID
-- **Ticker detail** (`/ticker/NVDA`) — IV history line chart, full signal history table, inline phase transition form
-- **Phase transitions** — Assign (A→B with cost basis) and Exit (B→A) buttons with confirmation modals
+| Page | What it shows |
+|---|---|
+| **Dashboard** | Ticker cards — phase, last signal, price, IV rank, option mid, confidence, order ID |
+| **Ticker Detail** | IV history line chart (Plotly), full signal history table, phase transition form |
+| **Run Signals** | Select tickers + adapter + `--execute` / `--thesis` flags, run scan directly from UI |
+| **Configuration** | Strategy parameters, scheduler settings, add/remove tracked tickers (Phase 7) |
 
 ---
 
