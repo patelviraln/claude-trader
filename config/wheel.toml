@@ -1,0 +1,12 @@
+[wheel]
+ema_period = 50
+rsi_min = 35
+rsi_max = 65
+delta_target = 0.30
+delta_tolerance = 0.05
+dte_min = 30
+dte_max = 45
+bb_period = 20
+bb_std_dev = 2.0
+volume_lookback_bars = 20
+soft_flag_confidence_penalty = "HIGH_TO_MEDIUM"

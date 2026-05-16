@@ -1,0 +1,50 @@
+{
+  "AAPL": {
+    "phase": "A",
+    "shares_held": 0,
+    "cost_basis": null,
+    "assignment_date": null,
+    "open_put_strike": null,
+    "open_put_expiry": null
+  },
+  "WXYZ": {
+    "phase": "A",
+    "shares_held": 0,
+    "cost_basis": null,
+    "assignment_date": null,
+    "open_put_strike": null,
+    "open_put_expiry": null
+  },
+  "CALLX": {
+    "phase": "B",
+    "shares_held": 100,
+    "cost_basis": 285.0,
+    "assignment_date": "2026-04-15",
+    "open_put_strike": 280.0,
+    "open_put_expiry": "2026-04-18"
+  },
+  "EMAFAIL": {
+    "phase": "A",
+    "shares_held": 0,
+    "cost_basis": null,
+    "assignment_date": null,
+    "open_put_strike": null,
+    "open_put_expiry": null
+  },
+  "RSIFAIL": {
+    "phase": "A",
+    "shares_held": 0,
+    "cost_basis": null,
+    "assignment_date": null,
+    "open_put_strike": null,
+    "open_put_expiry": null
+  },
+  "LOWCONF": {
+    "phase": "A",
+    "shares_held": 0,
+    "cost_basis": null,
+    "assignment_date": null,
+    "open_put_strike": null,
+    "open_put_expiry": null
+  }
+}

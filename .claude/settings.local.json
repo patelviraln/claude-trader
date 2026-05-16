@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "Bash(git add *)",
+      "PowerShell(python -m pip install \"pandas-ta==0.3.14b0\" pydantic structlog rich python-dotenv 2>&1)"
+    ]
+  }
+}

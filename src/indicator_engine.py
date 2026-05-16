@@ -1,0 +1,83 @@
+"""
+Indicator computation using the 'ta' library (Technical Analysis for Python).
+All functions accept a pandas DataFrame with OHLCV columns and return typed dicts.
+"""
+from typing import TypedDict
+
+import pandas as pd
+import ta.trend as trend_ind
+import ta.momentum as momentum_ind
+import ta.volatility as vol_ind
+
+
+class EMAResult(TypedDict):
+    ema: float
+    slope: float  # 5-bar linear slope (price units / bar)
+
+
+class RSIResult(TypedDict):
+    rsi: float
+
+
+class BollingerResult(TypedDict):
+    upper: float
+    mid: float
+    lower: float
+    percent_b: float  # 0 = at lower band, 1 = at upper band
+
+
+class VolumeProfileResult(TypedDict):
+    hvn_price: float           # price of highest-volume node
+    hvn_type: str              # "support" | "resistance" relative to current close
+    histogram: dict[float, float]  # price_level -> volume
+
+
+def compute_ema(df: pd.DataFrame, period: int) -> EMAResult:
+    """Compute EMA and 5-bar slope on the close column."""
+    ema_series = trend_ind.EMAIndicator(close=df["close"], window=period).ema_indicator()
+    ema_val = float(ema_series.iloc[-1])
+
+    window = ema_series.iloc[-5:]
+    slope = float((window.iloc[-1] - window.iloc[0]) / (len(window) - 1)) if len(window) >= 2 else 0.0
+
+    return EMAResult(ema=ema_val, slope=slope)
+
+
+def compute_rsi(df: pd.DataFrame, period: int = 14) -> RSIResult:
+    """Compute RSI on the close column."""
+    rsi_series = momentum_ind.RSIIndicator(close=df["close"], window=period).rsi()
+    return RSIResult(rsi=float(rsi_series.iloc[-1]))
+
+
+def compute_bollinger(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0) -> BollingerResult:
+    """Compute Bollinger Bands and %B on the close column."""
+    bb = vol_ind.BollingerBands(close=df["close"], window=period, window_dev=std_dev)
+    upper = float(bb.bollinger_hband().iloc[-1])
+    mid = float(bb.bollinger_mavg().iloc[-1])
+    lower = float(bb.bollinger_lband().iloc[-1])
+    pct_b = float(bb.bollinger_pband().iloc[-1])  # (close - lower) / (upper - lower)
+
+    return BollingerResult(upper=upper, mid=mid, lower=lower, percent_b=pct_b)
+
+
+def compute_volume_profile(df: pd.DataFrame, lookback: int = 20) -> VolumeProfileResult:
+    """
+    Compute a price-volume histogram over the last `lookback` bars.
+    Bins prices to nearest 0.50 increments. Returns the highest-volume node (HVN).
+    """
+    recent = df.iloc[-lookback:].copy()
+    typical = (recent["high"] + recent["low"] + recent["close"]) / 3
+
+    bin_size = 0.5
+    price_bins = (typical / bin_size).round() * bin_size
+
+    histogram: dict[float, float] = {}
+    for price, volume in zip(price_bins, recent["volume"]):
+        p = round(float(price), 2)
+        histogram[p] = histogram.get(p, 0.0) + float(volume)
+
+    hvn_price = max(histogram, key=lambda p: histogram[p])
+    current_close = float(df["close"].iloc[-1])
+    hvn_type = "support" if hvn_price <= current_close else "resistance"
+
+    return VolumeProfileResult(hvn_price=hvn_price, hvn_type=hvn_type, histogram=histogram)
