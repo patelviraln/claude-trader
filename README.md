@@ -151,14 +151,15 @@ streamlit run streamlit_app.py
 # opens http://localhost:8501
 ```
 
-The dashboard has four pages (sidebar navigation):
+The dashboard has five pages (sidebar navigation):
 
 | Page | What it shows |
 |---|---|
 | **Dashboard** | Ticker cards — phase, last signal, price, IV rank, option mid, confidence, order ID |
 | **Ticker Detail** | IV history line chart (Plotly), full signal history table, phase transition form |
 | **Run Signals** | Select tickers + adapter + `--execute` / `--thesis` flags, run scan directly from UI |
-| **Configuration** | Strategy parameters, scheduler settings, add/remove tracked tickers (Phase 7) |
+| **Backtest** | Walk-forward replay on historical OHLCV: equity curve, trade log, win rate, premium collected |
+| **Configuration** | Strategy parameters, scheduler settings, add/remove tracked tickers |
 
 ---
 
@@ -280,7 +281,7 @@ Returns `None` (shown as "unavailable") until at least 2 samples exist.
 pytest
 ```
 
-**145 tests passing** across:
+**168 tests passing** across:
 
 | File | What it covers |
 |---|---|
@@ -295,6 +296,7 @@ pytest
 | `test_phase_transition.py` | assign/exit commands, idempotency, multi-ticker |
 | `test_order_executor.py` | OCC symbol building, order placement, error guards |
 | `test_dashboard_data.py` | Data layer for the dashboard |
+| `test_backtester.py` | BacktestEngine walk-forward logic, BS pricing, delta strike search |
 
 ---
 
@@ -303,7 +305,7 @@ pytest
 ```
 claude-trader/
 ├── run_signals.py              # CLI: scan tickers, optional --execute / --thesis
-├── app.py                      # FastAPI dashboard (python app.py)
+├── streamlit_app.py            # Streamlit dashboard (streamlit run streamlit_app.py)
 ├── scheduler.py                # APScheduler daily cron (python scheduler.py)
 ├── phase_transition.py         # Phase A↔B CLI (assign / exit)
 ├── pyproject.toml
@@ -324,6 +326,7 @@ claude-trader/
 │   └── ticker.html             # IV chart + signal history
 ├── src/
 │   ├── indicator_engine.py     # EMA, RSI, Bollinger, volume profile, IV rank
+│   ├── backtester.py           # walk-forward BacktestEngine (BS pricing, realized vol)
 │   ├── signal_engine.py        # orchestrator: adapter → strategy → output → order
 │   ├── signal_output.py        # SignalCard schema, rich formatter, JSONL logger
 │   ├── dashboard_data.py       # data layer for the web UI
@@ -359,5 +362,5 @@ claude-trader/
 | **2 — Live data** | ✅ Complete | Alpaca live adapter (IEX feed, OCC parsing), IV rank/history, APScheduler |
 | **3 — AI thesis + transitions** | ✅ Complete | Claude API thesis (opus-4-7, adaptive thinking, tool use), phase_transition.py CLI |
 | **4 — Order execution** | ✅ Complete | AlpacaOrderExecutor, OCC symbol builder, `--execute` flag, option mid in cards |
-| **5 — Dashboard** | ✅ Complete | FastAPI UI: ticker grid, IV history chart, signal table, phase transition forms |
-| **6 — Backtesting** | Planned | Replay historical OHLCV + options through 7-filter pipeline; win rate, premium collected, assignment rate; integrated into Phase 5 dashboard as a new tab |
+| **5 — Dashboard** | ✅ Complete | Streamlit UI: ticker grid, IV history chart, signal table, phase transition forms, configuration |
+| **6 — Backtesting** | ✅ Complete | Walk-forward replay on historical OHLCV; BS-simulated entries; equity curve, win rate, premium collected, assignment rate — integrated as a Backtest page in the dashboard |
