@@ -67,7 +67,7 @@ class EMATrendFilter:
             if not price_above:
                 reasons.append(f"price {current_close:.2f} below EMA{self.ema_period} {result['ema']:.2f}")
             if not slope_positive:
-                reasons.append(f"EMA slope {result['slope']:.4f} ≤ 0 (declining)")
+                reasons.append(f"EMA slope {result['slope']:.4f} <= 0 (declining)")
             return FilterResult(
                 passed=False,
                 filter_name=self.name,
@@ -104,7 +104,7 @@ class RSIFilter:
             return FilterResult(
                 passed=False,
                 filter_name=self.name,
-                reason=f"RSI {rsi:.1f} out of range [{self.rsi_min}, {self.rsi_max}] — {direction}",
+                reason=f"RSI {rsi:.1f} out of range [{self.rsi_min}, {self.rsi_max}] ({direction})",
                 hard_stop=True,
             )
 
