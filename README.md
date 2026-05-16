@@ -155,11 +155,13 @@ The dashboard has five pages (sidebar navigation):
 
 | Page | What it shows |
 |---|---|
-| **Dashboard** | Ticker cards — phase, last signal, price, IV rank, option mid, confidence, order ID |
+| **Dashboard** | Ticker cards — phase, last signal, price, IV rank, option mid, confidence, order ID. **View Details** navigates directly to Ticker Detail for that ticker. |
 | **Ticker Detail** | IV history line chart (Plotly), full signal history table, phase transition form |
-| **Run Signals** | Select tickers + adapter + `--execute` / `--thesis` flags, run scan directly from UI |
-| **Backtest** | Walk-forward replay on historical OHLCV: equity curve, trade log, win rate, premium collected |
+| **Run Signals** | Select adapter (Alpaca default) and tickers, run the 7-filter scan from the UI; fixture adapter filters to tickers with available fixture files |
+| **Backtest** | Walk-forward replay on historical OHLCV: equity curve, trade log, win rate, premium collected. Ticker dropdown and date range. |
 | **Configuration** | Strategy parameters, scheduler settings, add/remove tracked tickers |
+
+**Adapter behaviour:** Alpaca is the default adapter on all pages when `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` are set in `.env`. Fixture adapter is always available as a fallback for offline / test use. Switching adapters immediately updates the ticker dropdown without requiring form submission.
 
 ---
 
@@ -375,3 +377,4 @@ claude-trader/
 | **4 — Order execution** | ✅ Complete | AlpacaOrderExecutor, OCC symbol builder, `--execute` flag, option mid in cards |
 | **5 — Dashboard** | ✅ Complete | Streamlit UI: ticker grid, IV history chart, signal table, phase transition forms, configuration |
 | **6 — Backtesting** | ✅ Complete | Walk-forward replay on historical OHLCV; BS-simulated entries; equity curve, win rate, premium collected, assignment rate — integrated as a Backtest page in the dashboard |
+| **Dashboard UX hardening** | ✅ Complete | Alpaca as default adapter, View Details navigation, sticky sidebar page state, adapter-aware ticker dropdowns, fixture-availability filtering |
