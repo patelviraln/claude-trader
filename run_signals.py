@@ -76,6 +76,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Output raw JSON cards to stdout; suppress rich terminal display",
     )
+    parser.add_argument(
+        "--thesis",
+        action="store_true",
+        help="Generate AI thesis text via Claude API (requires ANTHROPIC_API_KEY)",
+    )
     return parser.parse_args()
 
 
@@ -116,6 +121,7 @@ def main() -> None:
         state_path=args.state,
         signals_path=args.signals_out,
         print_output=not args.json_only,
+        generate_thesis=args.thesis,
     )
 
     if args.json_only:
