@@ -38,7 +38,13 @@ class AlpacaOrderExecutor:
     def __init__(self) -> None:
         api_key = os.environ["ALPACA_API_KEY"]
         secret_key = os.environ["ALPACA_SECRET_KEY"]
-        self._client = TradingClient(api_key, secret_key, paper=True)
+        base_url = os.environ.get("ALPACA_BASE_URL")
+        self._client = TradingClient(
+            api_key,
+            secret_key,
+            paper=True,
+            **({"url_override": base_url} if base_url else {}),
+        )
 
     def place_order_from_card(self, card: "SignalCard") -> dict:
         """
