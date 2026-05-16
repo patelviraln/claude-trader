@@ -480,6 +480,119 @@ def page_configuration() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Page: Backtest
+# ---------------------------------------------------------------------------
+
+def page_backtest() -> None:
+    st.title("Backtest")
+    st.caption(
+        "Walk-forward replay of the EMA + RSI filter pipeline on historical OHLCV. "
+        "Options are simulated via 30-day realized volatility and Black-Scholes."
+    )
+
+    cfg     = _load_config()
+    tracked = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
+
+    with st.form("backtest_form"):
+        c1, c2 = st.columns([2, 1])
+        ticker = c1.text_input("Ticker", value=tracked[0] if tracked else "AAPL").upper().strip()
+        phase  = c2.radio("Phase", ["A — Sell Put", "B — Sell Call"], horizontal=True)
+
+        d1, d2 = st.columns(2)
+        default_start = date.today().replace(year=date.today().year - 1)
+        start_date = d1.date_input("Start Date", value=default_start)
+        end_date   = d2.date_input("End Date",   value=date.today())
+
+        adapter_choice = st.radio("Data Source", ["fixture (synthetic)", "alpaca (live)"], horizontal=True)
+        run = st.form_submit_button("Run Backtest", type="primary")
+
+    if run:
+        if not ticker:
+            st.warning("Enter a ticker symbol.")
+            return
+
+        phase_code = "A" if phase.startswith("A") else "B"
+        use_alpaca = adapter_choice.startswith("alpaca")
+
+        with st.spinner(f"Running backtest for {ticker}…"):
+            try:
+                from src.backtester import BacktestEngine
+
+                if use_alpaca:
+                    from src.adapters.alpaca_adapter import AlpacaPaperAdapter
+                    adapter = AlpacaPaperAdapter()
+                else:
+                    from src.adapters.fixture_adapter import FixtureAdapter
+                    adapter = FixtureAdapter()
+
+                engine = BacktestEngine(adapter, cfg)
+                result = engine.run(ticker, start_date, end_date, phase=phase_code)
+
+            except Exception as exc:
+                st.error(f"Backtest failed: {exc}")
+                return
+
+        # Metrics row
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Closed Trades",  result.closed_trades)
+        m2.metric("Win Rate",        f"{result.win_rate:.1f}%")
+        m3.metric("Total Premium",   f"${result.total_premium:.2f}")
+        m4.metric("Avg Premium",     f"${result.avg_premium:.2f}")
+        pnl_delta = f"+${result.total_pnl:.2f}" if result.total_pnl >= 0 else f"-${abs(result.total_pnl):.2f}"
+        m5.metric("Total P&L",       f"${result.total_pnl:.2f}", delta=pnl_delta)
+
+        if not result.trades:
+            st.info("No trades generated — all entries blocked by EMA/RSI filters in this date range.")
+            return
+
+        # Equity curve
+        closed = [t for t in result.trades if t.outcome != "OPEN"]
+        if closed:
+            st.subheader("Equity Curve (cumulative P&L per share)")
+            running, cum_pnl = 0.0, []
+            for t in closed:
+                running += t.pnl
+                cum_pnl.append(round(running, 2))
+
+            color = "#3fb950" if result.total_pnl >= 0 else "#f85149"
+            fill_color = "rgba(63,185,80,0.08)" if result.total_pnl >= 0 else "rgba(248,81,73,0.08)"
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=[t.entry_date for t in closed], y=cum_pnl,
+                mode="lines+markers",
+                line=dict(color=color, width=2),
+                marker=dict(size=5),
+                fill="tozeroy", fillcolor=fill_color,
+                hovertemplate="Entry: %{x}<br>Cumulative P&L: $%{y:.2f}<extra></extra>",
+            ))
+            fig.update_layout(
+                height=300, margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(gridcolor="#21262d", color="#8b949e"),
+                yaxis=dict(gridcolor="#21262d", color="#8b949e", tickprefix="$"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Trade log
+        st.subheader("Trade Log")
+        rows = []
+        for t in result.trades:
+            outcome_label = {"EXPIRED_WORTHLESS": "Win", "ASSIGNED": "Assigned", "OPEN": "Open"}.get(t.outcome, t.outcome)
+            rows.append({
+                "Entry":       t.entry_date,
+                "Expiry":      t.expiry_date,
+                "Underlying":  f"${t.underlying_at_entry:.2f}",
+                "Strike":      f"${t.strike:.2f}",
+                "Premium":     f"${t.estimated_premium:.2f}",
+                "IV":          f"{t.iv_at_entry:.1%}",
+                "Outcome":     outcome_label,
+                "Exit Price":  f"${t.underlying_at_expiry:.2f}" if t.underlying_at_expiry is not None else "—",
+                "P&L":         f"${t.pnl:.2f}",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -497,7 +610,7 @@ def main() -> None:
 
     page = st.sidebar.radio(
         "Navigate",
-        ["Dashboard", "Ticker Detail", "Run Signals", "Configuration"],
+        ["Dashboard", "Ticker Detail", "Run Signals", "Backtest", "Configuration"],
         label_visibility="collapsed",
     )
 
@@ -509,6 +622,8 @@ def main() -> None:
         page_ticker_detail()
     elif page == "Run Signals":
         page_run_signals()
+    elif page == "Backtest":
+        page_backtest()
     elif page == "Configuration":
         page_configuration()
 

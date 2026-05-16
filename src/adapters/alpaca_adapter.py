@@ -1,6 +1,6 @@
 import os
 import datetime as dt
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient, OptionHistoricalDataClient
@@ -112,3 +112,24 @@ class AlpacaPaperAdapter:
         today_ts = pd.Timestamp(today)
         df["dte"] = (pd.to_datetime(df["expiry"]) - today_ts).dt.days
         return df.reset_index(drop=True)
+
+    def get_historical_ohlcv(self, ticker: str, start_date: date, end_date: date) -> pd.DataFrame:
+        start_dt = datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
+        end_dt = datetime(end_date.year, end_date.month, end_date.day, tzinfo=timezone.utc)
+
+        request = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame.Day,
+            start=start_dt,
+            end=end_dt,
+            feed="iex",
+        )
+        bars_response = self._stock_client.get_stock_bars(request)  # type: ignore[arg-type]
+
+        try:
+            df = bars_response.df.loc[ticker]
+        except KeyError:
+            raise RuntimeError(f"No historical OHLCV data for {ticker}")
+
+        df = df[["open", "high", "low", "close", "volume"]].astype(float)
+        return df.sort_index()
