@@ -502,8 +502,6 @@ def main() -> None:
     )
 
     st.sidebar.divider()
-    st.sidebar.caption("Phase 5 · Dashboard")
-    st.sidebar.caption("Phase 7 · Configuration")
 
     if page == "Dashboard":
         page_dashboard()
