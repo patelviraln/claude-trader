@@ -81,6 +81,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Generate AI thesis text via Claude API (requires ANTHROPIC_API_KEY)",
     )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Place Alpaca paper orders for actionable signals (requires ALPACA_API_KEY)",
+    )
     return parser.parse_args()
 
 
@@ -113,6 +118,11 @@ def main() -> None:
                 existing["phase"] = args.phase
             set_ticker_state(state_path, ticker, existing)
 
+    executor = None
+    if args.execute:
+        from src.order_executor import AlpacaOrderExecutor
+        executor = AlpacaOrderExecutor()
+
     adapter = build_adapter(args.adapter)
     cards = run_signals_batch(
         tickers=args.tickers,
@@ -122,6 +132,8 @@ def main() -> None:
         signals_path=args.signals_out,
         print_output=not args.json_only,
         generate_thesis=args.thesis,
+        execute=args.execute,
+        executor=executor,
     )
 
     if args.json_only:
