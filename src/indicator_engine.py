@@ -60,6 +60,17 @@ def compute_bollinger(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0) 
     return BollingerResult(upper=upper, mid=mid, lower=lower, percent_b=pct_b)
 
 
+def compute_iv_rank(current_iv: float, iv_series: list[float]) -> float | None:
+    """IV rank (0-100): where current IV sits within the historical high/low range."""
+    if len(iv_series) < 2:
+        return None
+    iv_low = min(iv_series)
+    iv_high = max(iv_series)
+    if iv_high == iv_low:
+        return 50.0
+    return round((current_iv - iv_low) / (iv_high - iv_low) * 100, 1)
+
+
 def compute_volume_profile(df: pd.DataFrame, lookback: int = 20) -> VolumeProfileResult:
     """
     Compute a price-volume histogram over the last `lookback` bars.

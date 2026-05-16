@@ -43,6 +43,7 @@ def run_one(ticker, adapter, tmp_state, tmp_path):
         config_path=CONFIG_PATH,
         state_path=tmp_state,
         signals_path=signals_path,
+        iv_history_dir=tmp_path / "iv_history",
         print_output=False,
     )
     return cards[0], signals_path
