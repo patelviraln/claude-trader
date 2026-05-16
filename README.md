@@ -1,78 +1,89 @@
 # claude-trader
 
-A personal, signal-only AI trading system implementing the **Wheel options strategy** on US large-cap equities. Phase 1 produces structured trade signal cards from fixture data — no live execution, no broker account required.
+A personal AI-assisted paper trading system implementing the **Wheel options strategy** on US large-cap equities. Generates structured signal cards, places paper orders via Alpaca, and serves a live dashboard — all driven by a 7-filter pipeline and an optional Claude API thesis layer.
 
 ---
 
 ## What it does
 
-For each ticker you give it, the system runs a 7-step filter chain and emits a structured signal card:
+For each ticker the system runs a 7-step filter chain and emits a structured signal card:
 
 - **SELL_PUT** — sell a cash-secured put (Phase A: no shares held)
 - **SELL_CALL** — sell a covered call (Phase B: 100 shares held)
-- **NO_SIGNAL** — one or more hard-stop filters failed; reason included
+- **NO_SIGNAL** — a hard-stop filter failed; reason included
 
-Each signal card includes the recommended strike, expiry, delta estimate, all indicator readings, a confidence tier (HIGH / MEDIUM / LOW), and any risk flags.
+Each card includes the recommended strike, expiry, delta estimate, IV rank, option mid price, indicator readings, a confidence tier (HIGH / MEDIUM / LOW), risk flags, an optional AI-generated thesis, and — when `--execute` is used — the Alpaca order ID.
 
 ---
 
 ## Requirements
 
 - Python 3.11+
-- Dependencies listed in `pyproject.toml`
-
-Install dependencies:
+- An [Alpaca](https://alpaca.markets) paper trading account (free)
+- Optional: `ANTHROPIC_API_KEY` for AI thesis generation
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-Or install the runtime deps directly:
+Or directly:
 
 ```bash
-pip install ta pydantic structlog rich python-dotenv requests APScheduler jinja2 alpaca-py
+pip install ta pydantic structlog rich python-dotenv requests APScheduler jinja2 \
+            alpaca-py fastapi uvicorn python-multipart anthropic
 ```
-
-> **Note:** `pandas-ta` is listed in the architecture spec but is not available for Python 3.11 on PyPI. The `ta` library is used instead and provides identical EMA / RSI / Bollinger Band functionality.
 
 ---
 
 ## Setup
 
-### 1. Copy the env file
+### 1. Copy and fill the env file
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in your API keys. For Phase 1 (fixture-only mode) **no keys are needed** — all fields can be left as placeholders.
+| Variable | Required | Description |
+|---|---|---|
+| `ALPACA_API_KEY` | Yes (live/execute) | Alpaca paper API key |
+| `ALPACA_SECRET_KEY` | Yes (live/execute) | Alpaca paper secret key |
+| `ALPACA_BASE_URL` | Yes (live/execute) | `https://paper-api.alpaca.markets` |
+| `ANTHROPIC_API_KEY` | Optional | Enables AI thesis via `--thesis` flag |
 
-### 2. Check the wheel config
+For fixture-only mode (`--adapter fixture`) **no keys are needed**.
 
-`config/wheel.toml` contains all 11 strategy parameters:
+### 2. Configure strategy parameters
+
+`config/wheel.toml` contains all strategy and scheduler settings:
 
 ```toml
 [wheel]
-ema_period          = 50
-rsi_min             = 35
-rsi_max             = 65
-delta_target        = 0.30
-delta_tolerance     = 0.05
-dte_min             = 30
-dte_max             = 45
-bb_period           = 20
-bb_std_dev          = 2.0
+ema_period           = 50
+rsi_min              = 35
+rsi_max              = 65
+delta_target         = 0.30
+delta_tolerance      = 0.05
+dte_min              = 30
+dte_max              = 45
+bb_period            = 20
+bb_std_dev           = 2.0
 volume_lookback_bars = 20
-soft_flag_confidence_penalty = "HIGH_TO_MEDIUM"
+
+[scheduler]
+tickers   = ["NVDA", "AAPL", "MSFT"]
+adapter   = "alpaca"
+run_hour  = 9
+run_minute = 35
+timezone  = "America/New_York"
 ```
 
-### 3. Check the state file
+### 3. Initialise ticker state
 
-`wheel_state.json` tracks which phase each ticker is in. Edit it manually in Phase 1:
+`wheel_state.json` tracks which phase each ticker is in. Add entries manually or via `phase_transition.py`:
 
 ```json
 {
-  "AAPL": {
+  "NVDA": {
     "phase": "A",
     "shares_held": 0,
     "cost_basis": null,
@@ -83,109 +94,146 @@ soft_flag_confidence_penalty = "HIGH_TO_MEDIUM"
 }
 ```
 
-- **Phase A** — you hold no shares; system looks for a put to sell
-- **Phase B** — you hold 100 shares from put assignment; system looks for a covered call to sell
-
 ---
 
 ## Running signals
 
-### Basic usage (fixture data, no API keys needed)
+### Fixture data (no API keys needed)
 
 ```bash
 python run_signals.py --tickers WXYZ --adapter fixture
+python run_signals.py --tickers WXYZ CALLX --adapter fixture --json-only
 ```
 
-### Scan multiple tickers
+### Live Alpaca data
 
 ```bash
-python run_signals.py --tickers AAPL MSFT NVDA --adapter fixture
+python run_signals.py --tickers AAPL MSFT NVDA --adapter alpaca
 ```
 
-### Override phase for all tickers
+### Place paper orders when a signal fires
 
 ```bash
-python run_signals.py --tickers AAPL --adapter fixture --phase A
-python run_signals.py --tickers AAPL --adapter fixture --phase B
+python run_signals.py --tickers MSFT --adapter alpaca --execute
 ```
 
-### Output raw JSON to stdout (no rich display)
+Submits a day-limit sell-to-open order at the option mid price. Order ID and status appear in the signal card.
+
+### Generate AI thesis (requires `ANTHROPIC_API_KEY`)
 
 ```bash
-python run_signals.py --tickers WXYZ --adapter fixture --json-only
+python run_signals.py --tickers NVDA --adapter alpaca --thesis
 ```
 
-### Use live Alpaca paper trading data (Phase 2+)
+Calls `claude-opus-4-7` with adaptive thinking and a cached system prompt. Returns "" silently if no API key is set.
 
-```bash
-python run_signals.py --tickers AAPL MSFT --adapter alpaca
-```
-
-Requires `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, and `ALPACA_BASE_URL` in your `.env`.
-
-### Full options
+### All flags
 
 ```
 --tickers       One or more ticker symbols (required)
 --adapter       fixture | alpaca  (default: fixture)
---phase         A | B  — override phase for all tickers
---config        Path to wheel config TOML  (default: config/wheel.toml)
---state         Path to wheel state JSON   (default: wheel_state.json)
---signals-out   Path to JSONL output file  (default: signals.jsonl)
+--phase         A | B  — override phase for all tickers this run
+--config        Path to wheel.toml  (default: config/wheel.toml)
+--state         Path to wheel_state.json  (default: wheel_state.json)
+--signals-out   Path to JSONL output  (default: signals.jsonl)
 --log-level     DEBUG | INFO | WARNING | ERROR
---json-only     Print raw JSON to stdout; suppress rich terminal display
+--json-only     Print raw JSON; suppress rich terminal display
+--thesis        Generate AI thesis via Claude API
+--execute       Place Alpaca paper orders for actionable signals
 ```
 
 ---
 
-## Understanding the output
+## Dashboard
 
-### Terminal display (rich)
-
-```
-╭─────────────────────────────── WXYZ  SELL_PUT  HIGH ────────────────╮
-│  Strike          $170.00                                             │
-│  Expiry          2026-06-22  (DTE 37)                               │
-│  Delta           -0.311                                              │
-│  IV Rank         24.9%                                              │
-│  Underlying      $188.82                                             │
-│  EMA50           186.99  (slope +0.0053)                            │
-│  RSI14           51.4                                               │
-│  BB %B           0.58                                               │
-│  HVN             $187.00  (support)                                 │
-│  Rationale       All 6 filters passed cleanly                       │
-╰──────────────────────────────────────────────────────────────────────╯
+```bash
+streamlit run streamlit_app.py
+# opens http://localhost:8501
 ```
 
-Color coding: **green** = HIGH confidence, **yellow** = MEDIUM, **red** = LOW.
+The dashboard has four pages (sidebar navigation):
 
-### JSON signal card schema
+| Page | What it shows |
+|---|---|
+| **Dashboard** | Ticker cards — phase, last signal, price, IV rank, option mid, confidence, order ID |
+| **Ticker Detail** | IV history line chart (Plotly), full signal history table, phase transition form |
+| **Run Signals** | Select tickers + adapter + `--execute` / `--thesis` flags, run scan directly from UI |
+| **Configuration** | Strategy parameters, scheduler settings, add/remove tracked tickers (Phase 7) |
+
+---
+
+## Automated daily scheduler
+
+Runs the full signal scan every trading day at the configured time (default 9:35 AM ET):
+
+```bash
+python scheduler.py                          # starts blocking cron loop
+python scheduler.py --run-now                # fire once immediately and exit
+python scheduler.py --config path/to.toml   # custom config
+```
+
+---
+
+## Phase transitions
+
+Record a put assignment (move Phase A → B):
+
+```bash
+python phase_transition.py assign NVDA --cost-basis 880.50
+```
+
+Record an exit (call exercised or expired, move Phase B → A):
+
+```bash
+python phase_transition.py exit NVDA
+```
+
+Or use the **Assign / Exit** buttons in the dashboard.
+
+---
+
+## Understanding signal output
+
+### Terminal display
+
+```
+╭────────────────────── MSFT  SELL_PUT  MEDIUM ──────────────────────╮
+│  Strike          $405.00                                            │
+│  Expiry          2026-06-18  (DTE 33)                               │
+│  Delta           -0.314                                             │
+│  IV Rank         100.0%                                             │
+│  Underlying      $422.00                                            │
+│  EMA50           404.51  (slope +0.2949)                            │
+│  RSI14           58.3                                               │
+│  BB %B           0.65                                               │
+│  HVN             $406.50  (support)                                 │
+│  Option Mid      $7.86                                              │
+│  Rationale       Soft flag: bb_unfavorable                          │
+│  Risk flags      BB position unfavorable for entry                  │
+│  Order ID        a0c8dc2b-…  [OrderStatus.ACCEPTED]                 │
+╰─────────────────────────────────────────────────────────────────────╯
+```
+
+### Signal card schema
 
 ```json
 {
-  "ticker": "WXYZ",
+  "ticker": "MSFT",
   "phase": "SELL_PUT",
-  "signal_timestamp": "2026-05-16T12:00:00Z",
-  "underlying_price": 188.82,
-  "recommended_strike": 170.0,
-  "recommended_expiry": "2026-06-22",
-  "dte": 37,
-  "delta_estimate": -0.311,
-  "iv_rank": 24.9,
-  "indicator_readings": {
-    "ema50": 186.99,
-    "ema50_slope": 0.0053,
-    "rsi14": 51.4,
-    "bb_upper": 194.77,
-    "bb_lower": 180.77,
-    "bb_percent_b": 0.58,
-    "volume_node_nearest": 187.0,
-    "volume_node_type": "support"
-  },
+  "signal_timestamp": "2026-05-16T17:02:49Z",
+  "underlying_price": 422.00,
+  "recommended_strike": 405.0,
+  "recommended_expiry": "2026-06-18",
+  "dte": 33,
+  "delta_estimate": -0.314,
+  "iv_rank": 100.0,
+  "option_mid": 7.86,
   "thesis_text": "",
-  "confidence_tier": "HIGH",
-  "confidence_rationale": "All 6 filters passed cleanly",
-  "risk_flags": [],
+  "confidence_tier": "MEDIUM",
+  "confidence_rationale": "Soft flag: bb_unfavorable",
+  "risk_flags": ["BB position unfavorable for entry"],
+  "order_id": "a0c8dc2b-8d89-44c6-bcaf-46be6f2691f2",
+  "order_status": "accepted",
   "no_signal_reason": null
 }
 ```
@@ -194,108 +242,59 @@ Color coding: **green** = HIGH confidence, **yellow** = MEDIUM, **red** = LOW.
 
 | Tier | Meaning |
 |---|---|
-| **HIGH** | All 6 filters passed cleanly; BB favorable; volume node confirms strike; delta within ±0.02 of target |
-| **MEDIUM** | Core filters pass; 1 soft flag (BB unfavorable or volume divergence); delta within ±0.05 |
-| **LOW** | Core filters pass; 2+ soft flags; or delta at edge of tolerance; or IV rank missing |
-
-### Hard stops vs soft flags
-
-| Filter | Type | Effect |
-|---|---|---|
-| EMA trend (price > EMA50 AND slope > 0) | **Hard stop** | Signal blocked entirely |
-| RSI in range 35–65 | **Hard stop** | Signal blocked entirely |
-| BB position favorable | **Soft flag** | Confidence lowered; signal still emitted |
-| Volume node anchor | **Soft flag** | Risk flag added; signal still emitted |
+| **HIGH** | All filters pass cleanly; delta within ±0.02; IV rank available |
+| **MEDIUM** | 1 soft flag (BB unfavorable or volume divergence); or delta within ±0.05; or IV rank missing |
+| **LOW** | 2+ soft flags; or delta at tolerance edge |
 
 ---
 
 ## Filter pipeline
 
-For each ticker the system runs these 7 filters cheapest-first:
-
 ```
-1. Phase Gate      — validate phase A or B in wheel_state.json
-2. EMA Trend       — price > EMA50 AND 5-bar slope > 0           [HARD STOP]
-3. RSI Gate        — 35 ≤ RSI(14) ≤ 65                           [HARD STOP]
-4. Bollinger Band  — price positioning check                       [soft flag]
-5. Options Chain   — fetch chain; check data exists               [HARD STOP]
-6. Delta Target    — find strike nearest ±0.30 delta (±0.05 tol) [HARD STOP]
-7. Volume Profile  — strike anchored to high-volume node          [soft flag]
+1. Phase Gate      — validate phase A or B in wheel_state.json        [hard stop]
+2. EMA Trend       — price > EMA50 AND 5-bar slope > 0                [hard stop]
+3. RSI Gate        — 35 ≤ RSI(14) ≤ 65                                [hard stop]
+4. Bollinger Band  — price positioning check                           [soft flag]
+5. Options Chain   — fetch chain; verify data exists                   [hard stop]
+6. Delta Target    — find strike nearest ±0.30 delta (±0.05 tol)      [hard stop]
+7. Volume Profile  — strike anchored to high-volume node              [soft flag]
 ```
 
 ---
 
-## Signal persistence
+## IV rank
 
-Every signal card (including NO_SIGNAL) is appended as one JSON line to `signals.jsonl`:
+The system maintains a rolling IV history in `iv_history/{TICKER}.jsonl`. After each scan the ATM put IV is appended, and IV rank is computed as:
+
+```
+IV Rank = (current_IV - 52w_low) / (52w_high - 52w_low) × 100
+```
+
+Returns `None` (shown as "unavailable") until at least 2 samples exist.
+
+---
+
+## Tests
 
 ```bash
-# View today's signals
-cat signals.jsonl | python -m json.tool
-
-# Count signals by type
-grep -o '"phase":"[^"]*"' signals.jsonl | sort | uniq -c
+pytest
 ```
 
-Structured logs (structlog JSON) are written to `logs/signals.log`.
+**145 tests passing** across:
 
----
-
-## Managing phase state
-
-Edit `wheel_state.json` manually when a put is assigned or a covered call is exercised:
-
-**Put assigned → move to Phase B:**
-```json
-"AAPL": {
-  "phase": "B",
-  "shares_held": 100,
-  "cost_basis": 172.50,
-  "assignment_date": "2026-05-17",
-  "open_put_strike": 175.0,
-  "open_put_expiry": "2026-05-16"
-}
-```
-
-**Covered call exercised → back to Phase A:**
-```json
-"AAPL": {
-  "phase": "A",
-  "shares_held": 0,
-  "cost_basis": null,
-  "assignment_date": null,
-  "open_put_strike": null,
-  "open_put_expiry": null
-}
-```
-
----
-
-## Adding your own tickers
-
-1. Add an entry to `wheel_state.json` for the ticker
-2. If using fixture adapter: add `{TICKER}_ohlcv.json` and `{TICKER}_options.json` to `fixtures/` (see existing files for format)
-3. If using alpaca adapter: no fixture files needed — data is fetched live
-
----
-
-## Running tests
-
-```bash
-pytest tests/
-```
-
-Expected output:
-
-```
-48 passed in 0.8s
-```
-
-Test coverage:
-- `tests/unit/test_indicator_engine.py` — EMA, RSI, Bollinger, volume profile
-- `tests/unit/test_filters.py` — all 7 filter classes
-- `tests/unit/test_state_store.py` — JSON state read/write helpers
-- `tests/integration/test_fixture_scenarios.py` — end-to-end: SELL_PUT, SELL_CALL, EMA fail, RSI fail, soft flags
+| File | What it covers |
+|---|---|
+| `test_indicator_engine.py` | EMA, RSI, Bollinger, volume profile, IV rank |
+| `test_filters.py` | All 7 filter classes |
+| `test_state_store.py` | JSON state read/write helpers |
+| `test_fixture_scenarios.py` | End-to-end: SELL_PUT, SELL_CALL, EMA fail, RSI fail, soft flags |
+| `test_alpaca_adapter.py` | Hardened live adapter (mocked Alpaca SDK) |
+| `test_iv_history.py` | append_iv_sample, load_iv_series |
+| `test_scheduler.py` | load_scheduler_config, build_adapter, run_job |
+| `test_thesis_generator.py` | Claude API thesis (mocked Anthropic client) |
+| `test_phase_transition.py` | assign/exit commands, idempotency, multi-ticker |
+| `test_order_executor.py` | OCC symbol building, order placement, error guards |
+| `test_dashboard_data.py` | Data layer for the dashboard |
 
 ---
 
@@ -303,47 +302,51 @@ Test coverage:
 
 ```
 claude-trader/
-├── run_signals.py              # CLI entry point
-├── pyproject.toml              # dependencies and pytest config
-├── wheel_state.json            # per-ticker phase state (edit manually)
-├── signals.jsonl               # JSONL signal log (appended each run)
+├── run_signals.py              # CLI: scan tickers, optional --execute / --thesis
+├── app.py                      # FastAPI dashboard (python app.py)
+├── scheduler.py                # APScheduler daily cron (python scheduler.py)
+├── phase_transition.py         # Phase A↔B CLI (assign / exit)
+├── pyproject.toml
+├── wheel_state.json            # per-ticker phase state
+├── signals.jsonl               # JSONL signal log
+├── iv_history/                 # rolling IV samples per ticker
+│   └── {TICKER}.jsonl
 ├── config/
-│   └── wheel.toml              # all 11 strategy parameters
-├── fixtures/
-│   ├── WXYZ_ohlcv.json         # example: clear SELL_PUT scenario
-│   ├── WXYZ_options.json
-│   ├── CALLX_ohlcv.json        # example: clear SELL_CALL scenario
-│   ├── CALLX_options.json
-│   ├── EMAFAIL_ohlcv.json      # example: EMA hard stop
-│   ├── RSIFAIL_ohlcv.json      # example: RSI hard stop
-│   ├── LOWCONF_ohlcv.json      # example: 2 soft flags → LOW confidence
-│   └── regen.py                # regenerate fixture data
+│   └── wheel.toml              # strategy + scheduler parameters
+├── fixtures/                   # deterministic test data
+│   ├── WXYZ_ohlcv.json / _options.json   (SELL_PUT scenario)
+│   ├── CALLX_ohlcv.json / _options.json  (SELL_CALL scenario)
+│   ├── EMAFAIL / RSIFAIL / LOWCONF       (failure scenarios)
+│   └── regen.py
+├── templates/                  # Jinja2 HTML templates
+│   ├── base.html               # layout, Chart.js, CSS
+│   ├── dashboard.html          # ticker grid + modals
+│   └── ticker.html             # IV chart + signal history
 ├── src/
-│   ├── indicator_engine.py     # EMA, RSI, Bollinger, volume profile
-│   ├── signal_engine.py        # orchestrator: adapter → strategy → output
-│   ├── signal_output.py        # SignalCard schema + rich formatter + JSONL logger
-│   ├── logger.py               # structlog dual-renderer setup
-│   ├── state_store.py          # read/write wheel_state.json
+│   ├── indicator_engine.py     # EMA, RSI, Bollinger, volume profile, IV rank
+│   ├── signal_engine.py        # orchestrator: adapter → strategy → output → order
+│   ├── signal_output.py        # SignalCard schema, rich formatter, JSONL logger
+│   ├── dashboard_data.py       # data layer for the web UI
+│   ├── iv_history.py           # rolling IV persistence (append / load)
+│   ├── order_executor.py       # AlpacaOrderExecutor: OCC symbol + limit order
+│   ├── thesis_generator.py     # Claude API thesis (opus-4-7, adaptive thinking)
+│   ├── logger.py               # structlog dual-renderer
+│   ├── state_store.py          # atomic JSON read/write for wheel_state.json
 │   ├── adapters/
 │   │   ├── base.py             # DataAdapter Protocol
 │   │   ├── fixture_adapter.py  # loads from fixtures/
-│   │   └── alpaca_adapter.py   # live Alpaca paper trading (Phase 2+)
+│   │   └── alpaca_adapter.py   # live Alpaca paper trading (IEX feed)
 │   └── strategies/
-│       ├── base.py             # Strategy Protocol + FilterResult model
-│       ├── registry.py         # strategy name → class registry
+│       ├── base.py             # Strategy Protocol + FilterResult
+│       ├── registry.py
 │       └── wheel/
 │           ├── state.py        # WheelState Pydantic model
 │           ├── filters.py      # 7 filter classes
 │           └── strategy.py     # WheelStrategy (two-pass evaluation)
-├── tests/
-│   ├── unit/
-│   │   ├── test_indicator_engine.py
-│   │   ├── test_filters.py
-│   │   └── test_state_store.py
-│   └── integration/
-│       └── test_fixture_scenarios.py
-└── logs/
-    └── signals.log             # structured JSON log (created on first run)
+└── tests/
+    ├── unit/                   # 11 test modules
+    └── integration/
+        └── test_fixture_scenarios.py
 ```
 
 ---
@@ -352,20 +355,9 @@ claude-trader/
 
 | Phase | Status | What it adds |
 |---|---|---|
-| **1 — Static pipeline** | ✅ Complete | Fixture data, all 7 filters, signal cards, CLI |
-| **2 — Live data** | Planned | Tradier sandbox adapter, real options chains with Greeks, APScheduler daily trigger |
-| **3 — Alpaca MCP + Claude reasoning** | Planned | Alpaca MCP v2 integration, AI-generated `thesis_text` via Claude API, phase transition CLI |
-| **4 — Execution layer** | Future | Paper order placement, auto phase transitions, risk guards |
-
----
-
-## Environment variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `ALPACA_API_KEY` | Phase 2+ | Alpaca API key |
-| `ALPACA_SECRET_KEY` | Phase 2+ | Alpaca secret key |
-| `ALPACA_BASE_URL` | Phase 2+ | `https://paper-api.alpaca.markets` for paper trading |
-| `TRADIER_API_TOKEN` | Phase 2 fallback | Tradier sandbox token |
-| `POLYGON_API_KEY` | Optional | Polygon.io for historical data |
-| `ANTHROPIC_API_KEY` | Phase 3+ | For AI-generated thesis text |
+| **1 — Signal pipeline** | ✅ Complete | 7-filter Wheel pipeline, fixture adapter, signal cards, CLI |
+| **2 — Live data** | ✅ Complete | Alpaca live adapter (IEX feed, OCC parsing), IV rank/history, APScheduler |
+| **3 — AI thesis + transitions** | ✅ Complete | Claude API thesis (opus-4-7, adaptive thinking, tool use), phase_transition.py CLI |
+| **4 — Order execution** | ✅ Complete | AlpacaOrderExecutor, OCC symbol builder, `--execute` flag, option mid in cards |
+| **5 — Dashboard** | ✅ Complete | FastAPI UI: ticker grid, IV history chart, signal table, phase transition forms |
+| **6 — Backtesting** | Planned | Replay historical OHLCV + options through 7-filter pipeline; win rate, premium collected, assignment rate; integrated into Phase 5 dashboard as a new tab |
