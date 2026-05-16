@@ -29,8 +29,8 @@ pip install -e ".[dev]"
 Or directly:
 
 ```bash
-pip install ta pydantic structlog rich python-dotenv requests APScheduler jinja2 \
-            alpaca-py fastapi uvicorn python-multipart anthropic
+pip install ta pydantic structlog rich python-dotenv requests APScheduler \
+            alpaca-py anthropic streamlit plotly tomli-w
 ```
 
 ---
@@ -255,11 +255,13 @@ Or use the **Assign / Exit** buttons in the dashboard.
 1. Phase Gate      — validate phase A or B in wheel_state.json        [hard stop]
 2. EMA Trend       — price > EMA50 AND 5-bar slope > 0                [hard stop]
 3. RSI Gate        — 35 ≤ RSI(14) ≤ 65                                [hard stop]
-4. Bollinger Band  — price positioning check                           [soft flag]
+4. Bollinger Band  — %B ≤ 0.20 (Phase A) or %B ≥ 0.80 (Phase B)      [soft flag]
 5. Options Chain   — fetch chain; verify data exists                   [hard stop]
 6. Delta Target    — find strike nearest ±0.30 delta (±0.05 tol)      [hard stop]
 7. Volume Profile  — strike anchored to high-volume node              [soft flag]
 ```
+
+All 7 filters implement a unified `run(market_data, state, config) → FilterResult` protocol defined in `src/strategies/base.py`.
 
 ---
 
@@ -320,10 +322,6 @@ claude-trader/
 │   ├── CALLX_ohlcv.json / _options.json  (SELL_CALL scenario)
 │   ├── EMAFAIL / RSIFAIL / LOWCONF       (failure scenarios)
 │   └── regen.py
-├── templates/                  # Jinja2 HTML templates
-│   ├── base.html               # layout, Chart.js, CSS
-│   ├── dashboard.html          # ticker grid + modals
-│   └── ticker.html             # IV chart + signal history
 ├── src/
 │   ├── indicator_engine.py     # EMA, RSI, Bollinger, volume profile, IV rank
 │   ├── backtester.py           # walk-forward BacktestEngine (BS pricing, realized vol)
@@ -347,10 +345,23 @@ claude-trader/
 │           ├── filters.py      # 7 filter classes
 │           └── strategy.py     # WheelStrategy (two-pass evaluation)
 └── tests/
-    ├── unit/                   # 11 test modules
+    ├── unit/                   # 12 test modules
     └── integration/
         └── test_fixture_scenarios.py
 ```
+
+---
+
+## Code quality
+
+| Area | Detail |
+|---|---|
+| **Filter Protocol** | All 7 filters implement `run(market_data, state, config) → FilterResult` — swappable without touching `WheelStrategy` |
+| **Env guards** | `AlpacaPaperAdapter` raises a clear `RuntimeError` on missing `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` via `_require_env()` |
+| **Deterministic fixtures** | `FixtureAdapter` uses a pinned `FIXTURE_REFERENCE_DATE` constant instead of `date.today()` — DTE calculations never drift |
+| **Bollinger bounds** | Phase A: `%B ≤ 0.20`; Phase B: `%B ≥ 0.80`; raw value clamped to `[0, 1]` before the gate |
+| **Structured logging** | `structlog` wired across all modules — every filter result, signal emitted, and order placed is logged at `debug`/`info` level |
+| **Delta guard** | `signal_engine` raises `RuntimeError` if `delta_estimate` is absent from filter adjustments rather than silently defaulting to `0.0` |
 
 ---
 
