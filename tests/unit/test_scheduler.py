@@ -78,7 +78,7 @@ class TestRunJob:
         cfg = _write_toml(tmp_path, {"tickers": ["AAPL", "MSFT"], "adapter": "fixture"})
 
         mock_card = MagicMock()
-        mock_card.phase = "SELL_PUT"
+        mock_card.signal_type = "SELL_PUT"
 
         with patch("scheduler.build_adapter") as mock_build, \
              patch("scheduler.run_signals_batch", return_value=[mock_card]) as mock_run:
@@ -100,7 +100,7 @@ class TestRunJob:
         cfg = _write_toml(tmp_path, {"tickers": ["AAPL", "MSFT", "NVDA"], "adapter": "fixture"})
 
         mock_card = MagicMock()
-        mock_card.phase = "SELL_PUT"
+        mock_card.signal_type = "SELL_PUT"
 
         def side_effect(*args, **kwargs):
             if kwargs.get("tickers") == ["MSFT"]:
@@ -125,7 +125,7 @@ class TestRunJob:
     def test_passes_config_path_to_run_signals_batch(self, tmp_path):
         cfg = _write_toml(tmp_path, {"tickers": ["NVDA"], "adapter": "fixture"})
         mock_card = MagicMock()
-        mock_card.phase = "NO_SIGNAL"
+        mock_card.signal_type = "NO_SIGNAL"
         with patch("scheduler.build_adapter"), \
              patch("scheduler.run_signals_batch", return_value=[mock_card]) as mock_run:
             from scheduler import run_job

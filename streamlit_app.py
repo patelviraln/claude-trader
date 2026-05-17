@@ -104,7 +104,7 @@ def page_dashboard() -> None:
 
         with cols[i % 3]:
             phase_badge  = _badge(f"Phase {phase}", PHASE_COLORS.get(phase, "#8b949e"))
-            sig_phase    = sig.get("phase", "—") if sig else "—"
+            sig_phase    = sig.get("signal_type", "—") if sig else "—"
             sig_color    = SIGNAL_COLORS.get(sig_phase, "#8b949e")
             signal_badge = _badge(sig_phase.replace("_", " "), sig_color) if sig else ""
 
@@ -115,17 +115,23 @@ def page_dashboard() -> None:
 
             if sig:
                 c1, c2 = st.columns(2)
+                _legs = sig.get("legs") or []
+                _leg0 = _legs[0] if _legs else {}
+                _payload = sig.get("payload") or {}
                 c1.metric("Price",      f"${sig.get('underlying_price', 0):.2f}")
-                c1.metric("Option Mid", f"${sig.get('option_mid') or 0:.2f}" if sig.get("option_mid") else "—")
-                iv = sig.get("iv_rank")
+                _mid = _leg0.get("limit_price")
+                c1.metric("Option Mid", f"${_mid:.2f}" if _mid else "—")
+                iv = _payload.get("iv_rank")
                 c2.metric("IV Rank", f"{iv:.1f}%" if iv is not None else "—")
                 tier = sig.get("confidence_tier")
                 if tier:
                     c2.markdown(_badge(tier, TIER_COLORS.get(tier, "#8b949e")), unsafe_allow_html=True)
-                if sig.get("recommended_strike"):
-                    st.caption(f"Strike ${sig['recommended_strike']:.2f}  ·  Expiry {sig.get('recommended_expiry','—')}  ·  DTE {sig.get('dte','—')}")
-                if sig.get("order_id"):
-                    st.caption(f"Order: {sig['order_id'][:12]}…  [{sig.get('order_status','—')}]")
+                if _leg0.get("strike"):
+                    st.caption(f"Strike ${_leg0['strike']:.2f}  ·  Expiry {_leg0.get('expiry','—')}  ·  DTE {_payload.get('dte','—')}")
+                _order_ids = sig.get("order_ids") or []
+                _order_sts = sig.get("order_statuses") or []
+                if _order_ids:
+                    st.caption(f"Order: {_order_ids[0][:12]}…  [{_order_sts[0] if _order_sts else '—'}]")
             else:
                 st.caption("No signals yet")
 
@@ -169,7 +175,7 @@ def page_ticker_detail() -> None:
         c3.metric("Cost Basis", f"${state['cost_basis']:.2f}")
     if last_sig:
         c4.metric("Last Price", f"${last_sig.get('underlying_price', 0):.2f}")
-        iv = last_sig.get("iv_rank")
+        iv = (last_sig.get("payload") or {}).get("iv_rank")
         c5.metric("IV Rank", f"{iv:.1f}%" if iv is not None else "—")
 
     # --- IV History chart ---
@@ -204,14 +210,18 @@ def page_ticker_detail() -> None:
         for s in signals:
             rows.append({
                 "Time":       s.get("signal_timestamp", "")[:16].replace("T", " "),
-                "Signal":     s.get("phase", ""),
-                "Strike":     f"${s['recommended_strike']:.2f}" if s.get("recommended_strike") else "—",
-                "Expiry":     s.get("recommended_expiry", "—"),
-                "Delta":      f"{s['delta_estimate']:+.3f}" if s.get("delta_estimate") is not None else "—",
-                "IV Rank":    f"{s['iv_rank']:.1f}%" if s.get("iv_rank") is not None else "—",
-                "Mid":        f"${s['option_mid']:.2f}" if s.get("option_mid") else "—",
+                _legs = s.get("legs") or []
+                _leg0 = _legs[0] if _legs else {}
+                _payload = s.get("payload") or {}
+                _order_ids = s.get("order_ids") or []
+                "Signal":     s.get("signal_type", ""),
+                "Strike":     f"${_leg0['strike']:.2f}" if _leg0.get("strike") else "—",
+                "Expiry":     _leg0.get("expiry", "—"),
+                "Delta":      f"{_leg0['delta_estimate']:+.3f}" if _leg0.get("delta_estimate") is not None else "—",
+                "IV Rank":    f"{_payload['iv_rank']:.1f}%" if _payload.get("iv_rank") is not None else "—",
+                "Mid":        f"${_leg0['limit_price']:.2f}" if _leg0.get("limit_price") else "—",
                 "Confidence": s.get("confidence_tier", "—"),
-                "Order":      (s.get("order_id") or "")[:8] or "—",
+                "Order":      (_order_ids[0][:8] if _order_ids else "") or "—",
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
@@ -307,20 +317,22 @@ def page_run_signals() -> None:
                 )
 
                 for card in cards:
-                    color = SIGNAL_COLORS.get(card.phase, "#8b949e")
+                    color = SIGNAL_COLORS.get(card.signal_type, "#8b949e")
                     tier_color = TIER_COLORS.get(card.confidence_tier or "", "#8b949e")
-                    if card.phase == "NO_SIGNAL":
+                    if card.signal_type == "NO_SIGNAL":
                         st.error(f"**{card.ticker}** — NO SIGNAL: {card.no_signal_reason}")
                     else:
+                        leg0 = card.legs[0] if card.legs else None
                         cols = st.columns([2, 1, 1, 1, 1, 2])
-                        cols[0].markdown(_badge(card.phase.replace("_", " "), color), unsafe_allow_html=True)
+                        cols[0].markdown(_badge(card.signal_type.replace("_", " "), color), unsafe_allow_html=True)
                         cols[0].markdown(f"**{card.ticker}**")
-                        cols[1].metric("Strike",  f"${card.recommended_strike:.2f}" if card.recommended_strike else "—")
-                        cols[2].metric("Mid",     f"${card.option_mid:.2f}" if card.option_mid else "—")
-                        cols[3].metric("IV Rank", f"{card.iv_rank:.1f}%" if card.iv_rank is not None else "—")
+                        cols[1].metric("Strike",  f"${leg0.strike:.2f}" if leg0 and leg0.strike else "—")
+                        cols[2].metric("Mid",     f"${leg0.limit_price:.2f}" if leg0 and leg0.limit_price else "—")
+                        iv_rank = card.payload.get("iv_rank")
+                        cols[3].metric("IV Rank", f"{iv_rank:.1f}%" if iv_rank is not None else "—")
                         cols[4].markdown(_badge(card.confidence_tier or "—", tier_color), unsafe_allow_html=True)
-                        if card.order_id:
-                            cols[5].success(f"Order {card.order_id[:8]}… [{card.order_status}]")
+                        if card.order_ids:
+                            cols[5].success(f"Order {card.order_ids[0][:8]}… [{card.order_statuses[0] if card.order_statuses else '—'}]")
                         if card.thesis_text:
                             st.caption(f"Thesis: {card.thesis_text}")
                         st.divider()

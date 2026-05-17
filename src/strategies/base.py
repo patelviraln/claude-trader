@@ -1,6 +1,13 @@
-from typing import Any, Protocol
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Protocol
+
 import pandas as pd
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from src.adapters.base import DataAdapter
+    from src.signal_output import SignalCard
 
 
 class FilterResult(BaseModel):
@@ -29,6 +36,18 @@ class Strategy(Protocol):
         """Return the Pydantic model class for this strategy's per-ticker state."""
         ...
 
+    def emit_signal_card(
+        self,
+        ticker: str,
+        adapter: "DataAdapter",
+        state: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> "SignalCard":
+        """Run the full pipeline and return a strategy-shaped SignalCard.
+        context may carry runtime overrides (e.g. {"iv_history_dir": Path(...)}).
+        """
+        ...
+
     def evaluate(
         self,
         ticker: str,
@@ -36,5 +55,5 @@ class Strategy(Protocol):
         options_chain: pd.DataFrame,
         state: dict[str, Any],
     ) -> list[FilterResult]:
-        """Run the full filter chain and return ordered FilterResult list."""
+        """Run the filter chain and return ordered FilterResult list."""
         ...

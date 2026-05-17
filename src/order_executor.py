@@ -1,10 +1,8 @@
 """
-Alpaca paper trading order executor for the Wheel strategy.
+Alpaca paper trading order executor.
 
 Places limit sell-to-open orders for the recommended option contract
 derived from a SignalCard. Requires ALPACA_API_KEY and ALPACA_SECRET_KEY.
-
-Module-level imports so the TradingClient can be patched in tests.
 """
 from __future__ import annotations
 
@@ -48,31 +46,30 @@ class AlpacaOrderExecutor:
 
     def place_order_from_card(self, card: "SignalCard") -> dict:
         """
-        Place a day-limit sell-to-open order for the recommended contract.
+        Place a day-limit sell-to-open order for the first leg of a SignalCard.
 
         Returns a dict with order_id, occ_symbol, limit_price, and status.
-        Raises ValueError if the card has no actionable signal or no mid price.
+        Raises ValueError if the card has no actionable signal or is missing leg data.
         Raises RuntimeError if the Alpaca API call fails.
         """
-        if card.phase not in ("SELL_PUT", "SELL_CALL"):
-            raise ValueError(f"Cannot place order for phase '{card.phase}'")
+        if card.signal_type not in ("SELL_PUT", "SELL_CALL"):
+            raise ValueError(f"Cannot place order for signal type '{card.signal_type}'")
 
-        if card.recommended_strike is None or card.recommended_expiry is None:
+        if not card.legs:
+            raise ValueError(f"Card for {card.ticker} has no legs")
+
+        leg = card.legs[0]
+        if leg.strike is None or leg.expiry is None:
             raise ValueError(f"Card for {card.ticker} is missing strike/expiry")
 
-        if card.option_mid is None or card.option_mid <= 0:
+        if leg.limit_price is None or leg.limit_price <= 0:
             raise ValueError(
                 f"No valid mid price for {card.ticker} — cannot determine limit price"
             )
 
-        option_type = "put" if card.phase == "SELL_PUT" else "call"
-        occ_symbol = build_occ_symbol(
-            card.ticker,
-            card.recommended_expiry,
-            option_type,
-            card.recommended_strike,
-        )
-        limit_price = round(card.option_mid, 2)
+        option_type = leg.option_type or ("put" if card.signal_type == "SELL_PUT" else "call")
+        occ_symbol = build_occ_symbol(card.ticker, leg.expiry, option_type, leg.strike)
+        limit_price = round(leg.limit_price, 2)
 
         try:
             order_req = LimitOrderRequest(

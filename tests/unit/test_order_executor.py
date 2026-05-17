@@ -4,7 +4,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 import pytest
 
-from src.signal_output import SignalCard
+from src.signal_output import Leg, SignalCard
 
 
 # ---------------------------------------------------------------------------
@@ -12,22 +12,38 @@ from src.signal_output import SignalCard
 # ---------------------------------------------------------------------------
 
 def _make_card(
-    phase="SELL_PUT",
+    signal_type="SELL_PUT",
     ticker="NVDA",
     strike=840.0,
     expiry="2026-06-26",
     option_mid=5.50,
 ) -> SignalCard:
+    legs = []
+    if signal_type != "NO_SIGNAL":
+        opt_type = "put" if signal_type == "SELL_PUT" else "call"
+        delta = -0.29 if signal_type == "SELL_PUT" else 0.29
+        legs = [
+            Leg(
+                asset_class="option",
+                symbol=ticker,
+                side="sell",
+                qty=1,
+                order_type="limit",
+                limit_price=option_mid,
+                strike=strike,
+                expiry=expiry,
+                option_type=opt_type,
+                delta_estimate=delta,
+            )
+        ]
     return SignalCard(
+        strategy_name="wheel",
         ticker=ticker,
-        phase=phase,
+        signal_type=signal_type,
         underlying_price=884.50,
-        recommended_strike=strike,
-        recommended_expiry=expiry,
-        dte=41,
-        delta_estimate=-0.29,
-        option_mid=option_mid,
-        confidence_tier="HIGH",
+        legs=legs,
+        payload={"dte": 41},
+        confidence_tier="HIGH" if signal_type != "NO_SIGNAL" else None,
     )
 
 
@@ -82,7 +98,7 @@ class TestBuildOccSymbol:
 class TestPlaceOrderFromCard:
     def test_returns_order_dict_on_success(self, executor):
         executor._client.submit_order.return_value = _make_order_response("ord-abc", "accepted")
-        card = _make_card(phase="SELL_PUT", strike=840.0, expiry="2026-06-26", option_mid=5.50)
+        card = _make_card(signal_type="SELL_PUT", strike=840.0, expiry="2026-06-26", option_mid=5.50)
         result = executor.place_order_from_card(card)
         assert result["order_id"] == "ord-abc"
         assert result["status"] == "accepted"
@@ -91,7 +107,7 @@ class TestPlaceOrderFromCard:
 
     def test_builds_correct_occ_for_sell_call(self, executor):
         executor._client.submit_order.return_value = _make_order_response()
-        card = _make_card(phase="SELL_CALL", ticker="AAPL", strike=190.0, expiry="2026-06-20", option_mid=3.20)
+        card = _make_card(signal_type="SELL_CALL", ticker="AAPL", strike=190.0, expiry="2026-06-20", option_mid=3.20)
         result = executor.place_order_from_card(card)
         assert result["occ_symbol"] == "AAPL260620C00190000"
 
@@ -101,21 +117,20 @@ class TestPlaceOrderFromCard:
         result = executor.place_order_from_card(card)
         assert result["limit_price"] == pytest.approx(5.12)
 
-    def test_raises_for_no_signal_phase(self, executor):
-        card = _make_card()
-        card.phase = "NO_SIGNAL"
+    def test_raises_for_no_signal_type(self, executor):
+        card = _make_card(signal_type="NO_SIGNAL")
         with pytest.raises(ValueError, match="Cannot place order"):
             executor.place_order_from_card(card)
 
     def test_raises_when_strike_missing(self, executor):
         card = _make_card()
-        card.recommended_strike = None
+        card.legs[0].strike = None
         with pytest.raises(ValueError, match="missing strike"):
             executor.place_order_from_card(card)
 
     def test_raises_when_expiry_missing(self, executor):
         card = _make_card()
-        card.recommended_expiry = None
+        card.legs[0].expiry = None
         with pytest.raises(ValueError, match="missing strike"):
             executor.place_order_from_card(card)
 

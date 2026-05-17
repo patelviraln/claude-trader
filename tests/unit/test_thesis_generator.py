@@ -7,35 +7,43 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.signal_output import IndicatorReadings, SignalCard
+from src.signal_output import Leg, SignalCard
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_card(phase="SELL_PUT", iv_rank=65.0) -> SignalCard:
-    return SignalCard(
-        ticker="NVDA",
-        phase=phase,
-        underlying_price=884.50,
-        recommended_strike=840.0,
-        recommended_expiry="2026-06-26",
-        dte=41,
+def _make_card(signal_type="SELL_PUT", iv_rank=65.0) -> SignalCard:
+    leg = Leg(
+        asset_class="option",
+        symbol="NVDA",
+        side="sell",
+        qty=1,
+        order_type="limit",
+        limit_price=7.50,
+        strike=840.0,
+        expiry="2026-06-26",
+        option_type="put",
         delta_estimate=-0.29,
-        iv_rank=iv_rank,
+    )
+    return SignalCard(
+        strategy_name="wheel",
+        ticker="NVDA",
+        signal_type=signal_type,
+        underlying_price=884.50,
+        legs=[leg],
+        indicators={
+            "ema50": 860.0,
+            "ema50_slope": 0.45,
+            "rsi14": 52.0,
+            "bb_percent_b": 0.55,
+            "volume_node_nearest": 850.0,
+            "volume_node_type": "support",
+        },
+        payload={"dte": 41, "iv_rank": iv_rank},
         confidence_tier="HIGH",
         confidence_rationale="All filters passed",
-        indicator_readings=IndicatorReadings(
-            ema50=860.0,
-            ema50_slope=0.45,
-            rsi14=52.0,
-            bb_upper=910.0,
-            bb_lower=820.0,
-            bb_percent_b=0.55,
-            volume_node_nearest=850.0,
-            volume_node_type="support",
-        ),
     )
 
 
