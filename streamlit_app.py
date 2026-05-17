@@ -36,10 +36,13 @@ from src.state_store import get_ticker_state, set_ticker_state
 STATE_PATH   = "wheel_state.json"
 SIGNALS_PATH = "signals.jsonl"
 IV_DIR       = "iv_history"
-CONFIG_PATH  = "config/wheel.toml"
+CONFIG_PATH  = "config/wheel.toml"   # default strategy config (Wheel)
 
 PHASE_COLORS  = {"A": "#58a6ff", "B": "#bc8cff"}
-SIGNAL_COLORS = {"SELL_PUT": "#3fb950", "SELL_CALL": "#bc8cff", "NO_SIGNAL": "#8b949e"}
+SIGNAL_COLORS = {
+    "SELL_PUT": "#3fb950", "SELL_CALL": "#bc8cff", "NO_SIGNAL": "#8b949e",
+    "SELL_PUT_SPREAD": "#58a6ff", "BUY_EQUITY": "#79c0ff", "SELL_EQUITY": "#f85149",
+}
 TIER_COLORS   = {"HIGH": "#3fb950", "MEDIUM": "#d29922", "LOW": "#f85149"}
 
 FIXTURES_DIR = Path("fixtures")
