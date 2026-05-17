@@ -34,6 +34,8 @@ from src.strategies.wheel.state import WheelState
 if TYPE_CHECKING:
     from src.adapters.base import DataAdapter
 
+from src.strategies.base import TradeResult
+
 logger = structlog.get_logger(__name__)
 
 
@@ -230,6 +232,46 @@ class WheelStrategy:
 
         logger.debug("evaluate_complete", ticker=ticker, filters_run=len(results))
         return results
+
+    def simulate_trade(
+        self,
+        card: SignalCard,
+        future_ohlcv: pd.DataFrame,
+        future_options_chains=None,
+    ) -> TradeResult:
+        """Simulate a Wheel trade from its signal card using BS pricing."""
+        from src.strategies.wheel.backtester import simulate_wheel_trade
+
+        if not card.legs:
+            from datetime import date
+            return TradeResult(
+                entry_date=card.signal_timestamp.date(),
+                exit_date=card.signal_timestamp.date(),
+                signal_type=card.signal_type,
+                ticker=card.ticker,
+                pnl=0.0,
+                metadata={"reason": "no legs in card"},
+            )
+
+        leg = card.legs[0]
+        entry_date = card.signal_timestamp.date()
+        dte_target = int(card.payload.get("dte", self._cfg.get("dte_min", 30) + 7))
+
+        # Reconstruct entry OHLCV from future_ohlcv preceding the entry date
+        entry_ts = pd.Timestamp(entry_date, tz="UTC")
+        entry_ohlcv = future_ohlcv[future_ohlcv.index <= entry_ts]
+        if entry_ohlcv.empty:
+            entry_ohlcv = future_ohlcv.iloc[:1]
+
+        return simulate_wheel_trade(
+            signal_type=card.signal_type,
+            ticker=card.ticker,
+            strike=leg.strike or card.underlying_price * 0.93,
+            entry_date=entry_date,
+            dte_target=dte_target,
+            entry_ohlcv=entry_ohlcv,
+            future_ohlcv=future_ohlcv,
+        )
 
     # ------------------------------------------------------------------
     # Private helpers
