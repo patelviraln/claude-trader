@@ -1,0 +1,43 @@
+# claude-trader strategy router configuration
+# Maps tickers to strategies and points each strategy to its config file.
+# Used by scheduler.py when this file exists (falls back to wheel.toml otherwise).
+
+[router]
+default_strategy = "wheel"
+
+[router.assignments]
+# Wheel — sell cash-secured puts / covered calls
+NVDA   = "wheel"
+AAPL   = "wheel"
+MSFT   = "wheel"
+AMZN   = "wheel"
+GOOGL  = "wheel"
+META   = "wheel"
+TSLA   = "wheel"
+INTC   = "wheel"
+MU     = "wheel"
+
+# Put Credit Spreads (Phase B1 — uncomment when implemented)
+# SPY  = "put_credit_spread"
+# QQQ  = "put_credit_spread"
+# IWM  = "put_credit_spread"
+
+# RSI(2) ETF basket (Phase B2 — uncomment when implemented)
+# EEM  = "rsi2"
+# EFA  = "rsi2"
+# TLT  = "rsi2"
+
+[scheduler]
+adapter    = "alpaca"
+run_hour   = 9
+run_minute = 35
+timezone   = "America/New_York"
+
+[strategies.wheel]
+config_path = "config/wheel.toml"
+
+# [strategies.put_credit_spread]
+# config_path = "config/put_credit_spread.toml"
+
+# [strategies.rsi2]
+# config_path = "config/rsi2.toml"
