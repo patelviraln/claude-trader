@@ -151,3 +151,78 @@ class TestGetOptionsChain:
         }
         df = adapter.get_options_chain("NVDA", dte_min=30, dte_max=45)
         assert len(df) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase A4 — new adapter methods
+# ---------------------------------------------------------------------------
+
+class TestGetMultiOhlcv:
+    def test_returns_dict_keyed_by_ticker(self, adapter):
+        tickers = ["AAPL", "SPY"]
+        import pandas as pd
+        # Build multi-index df with both tickers
+        idx = pd.MultiIndex.from_tuples(
+            [("AAPL", f"2026-01-{i+1:02d}") for i in range(60)]
+            + [("SPY", f"2026-01-{i+1:02d}") for i in range(60)]
+        )
+        prices = [150.0 + i for i in range(60)] + [400.0 + i for i in range(60)]
+        mock_df = pd.DataFrame(
+            {"open": prices, "high": prices, "low": prices, "close": prices, "volume": [1_000_000] * 120},
+            index=idx,
+        )
+        adapter._stock_client.get_stock_bars.return_value.df = mock_df
+        result = adapter.get_multi_ohlcv(tickers, bars=60)
+        assert set(result.keys()) == {"AAPL", "SPY"}
+        assert len(result["AAPL"]) == 60
+        assert len(result["SPY"]) == 60
+
+    def test_returns_empty_df_for_missing_ticker(self, adapter):
+        ticker_in_response = "AAPL"
+        import pandas as pd
+        idx = pd.MultiIndex.from_tuples(
+            [(ticker_in_response, f"2026-01-{i+1:02d}") for i in range(60)]
+        )
+        prices = [150.0 + i for i in range(60)]
+        mock_df = pd.DataFrame(
+            {"open": prices, "high": prices, "low": prices, "close": prices, "volume": [1_000_000] * 60},
+            index=idx,
+        )
+        adapter._stock_client.get_stock_bars.return_value.df = mock_df
+        result = adapter.get_multi_ohlcv(["AAPL", "MISSING"], bars=60)
+        assert "AAPL" in result
+        assert result["MISSING"].empty
+
+
+class TestFixtureAdapterA4:
+    def test_get_quote_returns_bid_ask_last(self, tmp_path):
+        import json
+        from src.adapters.fixture_adapter import FixtureAdapter
+
+        ohlcv = [{"timestamp": "2026-05-16T00:00:00Z", "open": 100.0, "high": 101.0,
+                  "low": 99.0, "close": 100.0, "volume": 1_000_000}]
+        (tmp_path / "WXYZ_ohlcv.json").write_text(json.dumps(ohlcv))
+        adapter = FixtureAdapter(tmp_path)
+        q = adapter.get_quote("WXYZ")
+        assert "bid" in q and "ask" in q and "last" in q
+        assert q["ask"] >= q["bid"]
+        assert q["last"] == pytest.approx(100.0)
+
+    def test_get_multi_ohlcv_returns_dict(self, tmp_path):
+        import json
+        from src.adapters.fixture_adapter import FixtureAdapter
+
+        for ticker in ["AAPL", "SPY"]:
+            ohlcv = [{"timestamp": "2026-05-16T00:00:00Z", "open": 100.0, "high": 101.0,
+                      "low": 99.0, "close": 100.0, "volume": 1_000_000}]
+            (tmp_path / f"{ticker}_ohlcv.json").write_text(json.dumps(ohlcv))
+        adapter = FixtureAdapter(tmp_path)
+        result = adapter.get_multi_ohlcv(["AAPL", "SPY"], bars=1)
+        assert set(result.keys()) == {"AAPL", "SPY"}
+        assert not result["AAPL"].empty
+
+    def test_get_option_quote_returns_stub(self, tmp_path):
+        from src.adapters.fixture_adapter import FixtureAdapter
+        adapter = FixtureAdapter(tmp_path)
+        q = adapter.get_option_quote("NVDA260626P00840000")
+        assert "bid" in q and "ask" in q

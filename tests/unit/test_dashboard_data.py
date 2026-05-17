@@ -27,16 +27,20 @@ def _write_signals(path: Path, records: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
 
-def _sig(ticker="AAPL", phase="SELL_PUT", ts="2026-05-16T10:00:00Z") -> dict:
+def _sig(ticker="AAPL", signal_type="SELL_PUT", ts="2026-05-16T10:00:00Z") -> dict:
     return {
-        "ticker": ticker, "phase": phase,
+        "ticker": ticker,
+        "strategy_name": "wheel",
+        "signal_type": signal_type,
         "signal_timestamp": ts,
         "underlying_price": 200.0,
-        "recommended_strike": 190.0,
-        "iv_rank": 55.0,
-        "option_mid": 3.5,
+        "legs": [{"asset_class": "option", "symbol": ticker, "side": "sell", "qty": 1,
+                  "strike": 190.0, "expiry": "2026-06-20", "option_type": "put",
+                  "delta_estimate": -0.29, "limit_price": 3.5}],
+        "payload": {"iv_rank": 55.0, "dte": 30},
         "confidence_tier": "HIGH",
-        "order_id": None,
+        "order_ids": [],
+        "order_statuses": [],
     }
 
 
@@ -88,7 +92,7 @@ class TestGetRecentSignals:
 
     def test_skips_blank_and_malformed_lines(self, tmp_path):
         p = tmp_path / "signals.jsonl"
-        p.write_text('{"ticker":"AAPL","phase":"SELL_PUT","signal_timestamp":"2026-05-16T10:00:00Z","underlying_price":200.0}\n\nnot-json\n', encoding="utf-8")
+        p.write_text('{"ticker":"AAPL","signal_type":"SELL_PUT","signal_timestamp":"2026-05-16T10:00:00Z","underlying_price":200.0}\n\nnot-json\n', encoding="utf-8")
         result = get_recent_signals(p)
         assert len(result) == 1
 

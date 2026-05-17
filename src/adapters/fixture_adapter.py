@@ -2,6 +2,7 @@ import datetime
 import json
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -16,12 +17,15 @@ class FixtureAdapter:
     Fixture directory layout:
         fixtures/{ticker}_ohlcv.json       — list of OHLCV bar dicts
         fixtures/{ticker}_options.json     — list of option contract dicts
+
+    Also provides stubs for get_quote, get_multi_ohlcv, get_option_quote so the
+    adapter satisfies the full DataAdapter / OptionsDataAdapter Protocol.
     """
 
     def __init__(self, fixtures_dir: str | Path = "fixtures"):
         self._dir = Path(fixtures_dir)
 
-    def get_ohlcv(self, ticker: str, bars: int) -> pd.DataFrame:
+    def get_ohlcv(self, ticker: str, bars: int, timeframe: str = "1Day") -> pd.DataFrame:
         path = self._dir / f"{ticker}_ohlcv.json"
         if not path.exists():
             raise FileNotFoundError(f"OHLCV fixture not found: {path}")
@@ -32,6 +36,21 @@ class FixtureAdapter:
         df = df.set_index("timestamp").sort_index()
         df = df[["open", "high", "low", "close", "volume"]].astype(float)
         return df.iloc[-bars:]
+
+    def get_quote(self, ticker: str) -> dict[str, Any]:
+        """Return a synthetic quote based on the last close from the fixture OHLCV."""
+        try:
+            df = self.get_ohlcv(ticker, bars=1)
+            last = float(df["close"].iloc[-1])
+        except (FileNotFoundError, IndexError):
+            last = 0.0
+        spread = last * 0.001  # 0.1% synthetic spread
+        return {
+            "bid": round(last - spread / 2, 4),
+            "ask": round(last + spread / 2, 4),
+            "last": last,
+            "ts": datetime.datetime.now(datetime.timezone.utc),
+        }
 
     def get_options_chain(self, ticker: str, dte_min: int, dte_max: int) -> pd.DataFrame:
         path = self._dir / f"{ticker}_options.json"
@@ -80,3 +99,16 @@ class FixtureAdapter:
         }, index=dates)
         df.index.name = "timestamp"
         return df
+
+    def get_multi_ohlcv(
+        self,
+        tickers: list[str],
+        bars: int,
+        timeframe: str = "1Day",
+    ) -> dict[str, pd.DataFrame]:
+        """Loop over single-ticker calls (fixtures don't support batch fetch)."""
+        return {ticker: self.get_ohlcv(ticker, bars=bars, timeframe=timeframe) for ticker in tickers}
+
+    def get_option_quote(self, occ_symbol: str) -> dict[str, Any]:
+        """Return a stub option quote (fixtures don't have tick-level option data)."""
+        return {"bid": 0.0, "ask": 0.0, "iv": None, "delta": None}

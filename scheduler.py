@@ -73,7 +73,7 @@ def run_job(config_path: Path) -> None:
                 print_output=True,
             )
             results["ok"].append(ticker)
-            log.info("scheduler.ticker_done", ticker=ticker, phase=cards[0].phase if cards else "?")
+            log.info("scheduler.ticker_done", ticker=ticker, signal_type=cards[0].signal_type if cards else "?")
         except Exception as exc:
             results["error"].append(ticker)
             log.error("scheduler.ticker_error", ticker=ticker, error=str(exc))

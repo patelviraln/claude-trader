@@ -86,6 +86,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Place Alpaca paper orders for actionable signals (requires ALPACA_API_KEY)",
     )
+    parser.add_argument(
+        "--strategy",
+        default=None,
+        metavar="NAME",
+        help="Strategy name override (e.g. 'wheel', 'put_credit_spread', 'rsi2'). "
+             "Defaults to 'wheel' when --config points to wheel.toml.",
+    )
     return parser.parse_args()
 
 

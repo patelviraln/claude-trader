@@ -1,23 +1,31 @@
 """
-Phase 6 — Walk-forward backtester for the Wheel strategy.
+Walk-forward backtester for options income strategies (Phase A7 refactor).
 
-Uses 30-day realized volatility + Black-Scholes to simulate options entries
-on each day the EMA and RSI hard filters pass, then checks outcome at expiry.
+The generic BacktestEngine handles the date loop, walk-forward data slicing,
+equity curve, and summary metrics. Strategy-specific P&L simulation is
+delegated to Strategy.simulate_trade() so each strategy can plug in.
+
+For Wheel backtests, WheelStrategy.simulate_trade() uses Black-Scholes
+pricing + assignment logic from src/strategies/wheel/backtester.py.
 """
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd
 from pydantic import BaseModel
 
+from src.strategies.base import TradeResult
+from src.strategies.wheel.backtester import (
+    find_delta_strike,
+    realized_vol,
+)
 from src.strategies.wheel.filters import EMATrendFilter, RSIFilter
 
 
 # ---------------------------------------------------------------------------
-# Models
+# Output models (preserved for backwards compat with streamlit_app.py)
 # ---------------------------------------------------------------------------
 
 class BacktestTrade(BaseModel):
@@ -27,11 +35,11 @@ class BacktestTrade(BaseModel):
     expiry_date: str
     underlying_at_entry: float
     strike: float
-    estimated_premium: float         # per share
+    estimated_premium: float
     iv_at_entry: float
     outcome: str                     # "EXPIRED_WORTHLESS" | "ASSIGNED" | "OPEN"
     underlying_at_expiry: float | None = None
-    pnl: float = 0.0                 # per share
+    pnl: float = 0.0
 
 
 class BacktestSummary(BaseModel):
@@ -51,76 +59,19 @@ class BacktestSummary(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Math helpers
-# ---------------------------------------------------------------------------
-
-def _realized_vol(closes: pd.Series, window: int = 30) -> float:
-    log_ret = closes.pct_change().dropna()
-    if len(log_ret) < 5:
-        return 0.25
-    return float(log_ret.tail(window).std() * math.sqrt(252))
-
-
-def _norm_cdf(x: float) -> float:
-    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
-
-
-def _bs_price(flag: str, S: float, K: float, T: float, r: float, sigma: float) -> float:
-    T = max(T, 1e-6)
-    sigma = max(sigma, 1e-4)
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        if flag == "p":
-            return max(0.0, K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1))
-        return max(0.0, S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2))
-    except Exception:
-        return max(0.0, (K - S) if flag == "p" else (S - K))
-
-
-def _bs_delta(flag: str, S: float, K: float, T: float, r: float, sigma: float) -> float:
-    T = max(T, 1e-6)
-    sigma = max(sigma, 1e-4)
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        return _norm_cdf(d1) - 1.0 if flag == "p" else _norm_cdf(d1)
-    except Exception:
-        return 0.0
-
-
-def _find_delta_strike(
-    flag: str, S: float, T: float, r: float, sigma: float, target_delta: float
-) -> float:
-    T = max(T, 1e-6)
-    sigma = max(sigma, 1e-4)
-    lo, hi = S * 0.50, S * 1.50
-    mid = S
-    for _ in range(60):
-        mid = (lo + hi) / 2.0
-        try:
-            d = abs(_bs_delta(flag, S, mid, T, r, sigma))
-        except Exception:
-            return round(S * (0.93 if flag == "p" else 1.07), 2)
-        if abs(d - target_delta) < 0.001:
-            break
-        if flag == "p":
-            if d < target_delta:
-                lo = mid
-            else:
-                hi = mid
-        else:
-            if d < target_delta:
-                hi = mid
-            else:
-                lo = mid
-    return round(mid, 2)
-
-
-# ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
 
 class BacktestEngine:
+    """Walk-forward backtester. Strategy-agnostic entry loop; Wheel-specific
+    P&L delegated to simulate_wheel_trade (imported from wheel/backtester.py).
+
+    Phase A7 NOTE: Once the full Strategy.simulate_trade() Protocol is adopted
+    across Track B strategies, the engine will call strategy.simulate_trade()
+    for all strategies. For now, Wheel stays on the direct import path so the
+    existing Streamlit Backtest page and tests remain unchanged.
+    """
+
     def __init__(self, adapter: Any, config: dict):
         cfg = config.get("wheel", config)
         self._adapter = adapter
@@ -139,10 +90,13 @@ class BacktestEngine:
         end_date: date,
         phase: str = "A",
     ) -> BacktestSummary:
+        from src.strategies.wheel.backtester import simulate_wheel_trade
+
         if start_date > end_date:
             return self._empty_summary(ticker, start_date, end_date, phase)
 
         flag = "p" if phase == "A" else "c"
+        signal_type = "SELL_PUT" if phase == "A" else "SELL_CALL"
         r_free = 0.05
         min_bars = self._ema_period + 20
 
@@ -176,43 +130,36 @@ class BacktestEngine:
                 continue
 
             S = float(hist["close"].iloc[-1])
-            iv = _realized_vol(hist["close"])
+            iv = realized_vol(hist["close"])
             T = self._dte_target / 365.0
+            strike = find_delta_strike(flag, S, T, r_free, iv, self._delta_target)
 
-            strike = _find_delta_strike(flag, S, T, r_free, iv, self._delta_target)
-            premium = _bs_price(flag, S, strike, T, r_free, iv)
-
-            expiry_date = current_date + timedelta(days=self._dte_target)
-
-            expiry_ts = pd.Timestamp(expiry_date, tz="UTC")
-            future = df_full[df_full.index >= expiry_ts]
-
-            if future.empty or expiry_date > end_date:
-                outcome = "OPEN"
-                underlying_at_expiry = None
-                pnl = 0.0
-            else:
-                exp_price = float(future["close"].iloc[0])
-                assigned = (exp_price < strike) if phase == "A" else (exp_price > strike)
-                outcome = "ASSIGNED" if assigned else "EXPIRED_WORTHLESS"
-                pnl = premium - abs(strike - exp_price) if assigned else premium
-                underlying_at_expiry = exp_price
+            result: TradeResult = simulate_wheel_trade(
+                signal_type=signal_type,
+                ticker=ticker,
+                strike=strike,
+                entry_date=current_date,
+                dte_target=self._dte_target,
+                entry_ohlcv=hist,
+                future_ohlcv=df_full,
+                r_free=r_free,
+            )
 
             trades.append(BacktestTrade(
                 ticker=ticker,
-                phase="SELL_PUT" if phase == "A" else "SELL_CALL",
-                entry_date=current_date.isoformat(),
-                expiry_date=expiry_date.isoformat(),
+                phase=signal_type,
+                entry_date=result.entry_date.isoformat(),
+                expiry_date=result.exit_date.isoformat(),
                 underlying_at_entry=round(S, 2),
-                strike=round(strike, 2),
-                estimated_premium=round(premium, 2),
-                iv_at_entry=round(iv, 4),
-                outcome=outcome,
-                underlying_at_expiry=round(underlying_at_expiry, 2) if underlying_at_expiry is not None else None,
-                pnl=round(pnl, 2),
+                strike=result.metadata.get("strike", strike),
+                estimated_premium=result.metadata.get("premium", 0.0),
+                iv_at_entry=result.metadata.get("iv_at_entry", iv),
+                outcome=result.metadata.get("outcome", "OPEN"),
+                underlying_at_expiry=None,
+                pnl=result.pnl,
             ))
 
-            current_date = expiry_date + timedelta(days=1)
+            current_date = result.exit_date + timedelta(days=1)
 
         return self._build_summary(ticker, start_date, end_date, phase, trades)
 

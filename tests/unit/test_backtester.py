@@ -10,9 +10,11 @@ import pytest
 from src.backtester import (
     BacktestEngine,
     BacktestSummary,
-    _bs_price,
-    _find_delta_strike,
-    _realized_vol,
+)
+from src.strategies.wheel.backtester import (
+    bs_price as _bs_price,
+    find_delta_strike as _find_delta_strike,
+    realized_vol as _realized_vol,
 )
 
 
@@ -215,3 +217,73 @@ class TestBacktestEngineRun:
         engine = BacktestEngine(_MockAdapter(df), _DEFAULT_CONFIG)
         result = engine.run("TEST", date(2024, 3, 1), date(2024, 10, 31))
         assert result.wins + result.assignments == result.closed_trades
+
+
+# ---------------------------------------------------------------------------
+# Phase A7 — simulate_trade via WheelStrategy Protocol
+# ---------------------------------------------------------------------------
+
+class TestSimulateTrade:
+    def test_simulate_trade_returns_trade_result(self):
+        from src.strategies.wheel.strategy import WheelStrategy, load_wheel_config
+        from src.signal_output import Leg, SignalCard
+
+        cfg = load_wheel_config()
+        strategy = WheelStrategy()
+        strategy.load_config(cfg)
+
+        df = _make_ohlcv(100, start_price=150.0, drift=0.001, vol=0.01)
+
+        import datetime
+        ts = datetime.datetime(2024, 5, 1, 9, 35, tzinfo=datetime.timezone.utc)
+        leg = Leg(
+            asset_class="option",
+            symbol="TEST",
+            side="sell",
+            qty=1,
+            order_type="limit",
+            limit_price=3.50,
+            strike=140.0,
+            expiry="2024-06-01",
+            option_type="put",
+            delta_estimate=-0.30,
+        )
+        card = SignalCard(
+            strategy_name="wheel",
+            ticker="TEST",
+            signal_type="SELL_PUT",
+            signal_timestamp=ts,
+            underlying_price=150.0,
+            legs=[leg],
+            payload={"dte": 31},
+        )
+
+        from src.strategies.base import TradeResult
+        result = strategy.simulate_trade(card, df)
+        assert isinstance(result, TradeResult)
+        assert result.ticker == "TEST"
+        assert result.signal_type == "SELL_PUT"
+        assert isinstance(result.pnl, float)
+        assert result.exit_date > result.entry_date
+
+    def test_simulate_trade_with_no_legs_returns_zero_pnl(self):
+        from src.strategies.wheel.strategy import WheelStrategy, load_wheel_config
+        from src.signal_output import SignalCard
+        import datetime
+
+        cfg = load_wheel_config()
+        strategy = WheelStrategy()
+        strategy.load_config(cfg)
+
+        ts = datetime.datetime(2024, 5, 1, tzinfo=datetime.timezone.utc)
+        card = SignalCard(
+            strategy_name="wheel",
+            ticker="TEST",
+            signal_type="NO_SIGNAL",
+            signal_timestamp=ts,
+            underlying_price=150.0,
+            legs=[],
+        )
+        df = _make_ohlcv(10)
+        result = strategy.simulate_trade(card, df)
+        assert result.pnl == 0.0

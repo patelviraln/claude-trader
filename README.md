@@ -219,25 +219,42 @@ Or use the **Assign / Exit** buttons in the dashboard.
 
 ### Signal card schema
 
+The schema is strategy-agnostic (Track A refactor). Option-specific fields live in `legs[]`; strategy-specific extras in `payload{}`.
+
 ```json
 {
+  "strategy_name": "wheel",
   "ticker": "MSFT",
-  "phase": "SELL_PUT",
+  "signal_type": "SELL_PUT",
   "signal_timestamp": "2026-05-16T17:02:49Z",
   "underlying_price": 422.00,
-  "recommended_strike": 405.0,
-  "recommended_expiry": "2026-06-18",
-  "dte": 33,
-  "delta_estimate": -0.314,
-  "iv_rank": 100.0,
-  "option_mid": 7.86,
+  "legs": [
+    {
+      "asset_class": "option",
+      "symbol": "MSFT",
+      "side": "sell",
+      "qty": 1,
+      "order_type": "limit",
+      "limit_price": 7.86,
+      "strike": 405.0,
+      "expiry": "2026-06-18",
+      "option_type": "put",
+      "delta_estimate": -0.314
+    }
+  ],
+  "indicators": {
+    "ema50": 404.51, "ema50_slope": 0.2949,
+    "rsi14": 58.3, "bb_percent_b": 0.65,
+    "volume_node_nearest": 406.50, "volume_node_type": "support"
+  },
+  "payload": { "dte": 33, "iv_rank": 100.0 },
   "thesis_text": "",
   "confidence_tier": "MEDIUM",
   "confidence_rationale": "Soft flag: bb_unfavorable",
   "risk_flags": ["BB position unfavorable for entry"],
-  "order_id": "a0c8dc2b-8d89-44c6-bcaf-46be6f2691f2",
-  "order_status": "accepted",
-  "no_signal_reason": null
+  "no_signal_reason": null,
+  "order_ids": ["a0c8dc2b-8d89-44c6-bcaf-46be6f2691f2"],
+  "order_statuses": ["accepted"]
 }
 ```
 
@@ -285,7 +302,7 @@ Returns `None` (shown as "unavailable") until at least 2 samples exist.
 pytest
 ```
 
-**168 tests passing** across:
+**198 tests passing** across:
 
 | File | What it covers |
 |---|---|
@@ -300,7 +317,10 @@ pytest
 | `test_phase_transition.py` | assign/exit commands, idempotency, multi-ticker |
 | `test_order_executor.py` | OCC symbol building, order placement, error guards |
 | `test_dashboard_data.py` | Data layer for the dashboard |
-| `test_backtester.py` | BacktestEngine walk-forward logic, BS pricing, delta strike search |
+| `test_backtester.py` | BacktestEngine walk-forward logic, BS pricing, delta strike search, simulate_trade Protocol |
+| `test_state_store.py` | Old flat-file API + new per-strategy get/set/all_tickers API |
+| `test_router.py` | Strategy resolution, grouped assignments, build_strategy |
+| `test_alpaca_adapter.py` | get_ohlcv, get_options_chain, get_multi_ohlcv, fixture quote/option stubs |
 
 ---
 
@@ -308,17 +328,23 @@ pytest
 
 ```
 claude-trader/
-├── run_signals.py              # CLI: scan tickers, optional --execute / --thesis
+├── run_signals.py              # CLI: scan tickers, optional --execute / --thesis / --strategy
 ├── streamlit_app.py            # Streamlit dashboard (streamlit run streamlit_app.py)
 ├── scheduler.py                # APScheduler daily cron (python scheduler.py)
 ├── phase_transition.py         # Phase A↔B CLI (assign / exit)
 ├── pyproject.toml
-├── wheel_state.json            # per-ticker phase state
-├── signals.jsonl               # JSONL signal log
+├── wheel_state.json            # Wheel per-ticker state (legacy; migrates to state/wheel.json)
+├── signals.jsonl               # JSONL signal log (strategy-agnostic schema)
 ├── iv_history/                 # rolling IV samples per ticker
 │   └── {TICKER}.jsonl
+├── state/                      # per-strategy state files (Phase A3)
+│   └── {strategy}.json
 ├── config/
-│   └── wheel.toml              # strategy + scheduler parameters
+│   ├── wheel.toml              # Wheel strategy parameters
+│   └── strategies.toml         # strategy router: ticker → strategy mapping
+├── scripts/                    # one-shot migration helpers
+│   ├── migrate_signals_jsonl.py
+│   └── migrate_wheel_state.py
 ├── fixtures/                   # deterministic test data
 │   ├── WXYZ_ohlcv.json / _options.json   (SELL_PUT scenario)
 │   ├── CALLX_ohlcv.json / _options.json  (SELL_CALL scenario)
@@ -326,26 +352,29 @@ claude-trader/
 │   └── regen.py
 ├── src/
 │   ├── indicator_engine.py     # EMA, RSI, Bollinger, volume profile, IV rank
-│   ├── backtester.py           # walk-forward BacktestEngine (BS pricing, realized vol)
-│   ├── signal_engine.py        # orchestrator: adapter → strategy → output → order
-│   ├── signal_output.py        # SignalCard schema, rich formatter, JSONL logger
+│   ├── backtester.py           # walk-forward BacktestEngine (delegates P&L to strategy)
+│   ├── signal_engine.py        # thin orchestrator: adapter → strategy.emit_signal_card → output
+│   ├── signal_output.py        # Leg + SignalCard schema, rich formatter, JSONL logger
 │   ├── dashboard_data.py       # data layer for the web UI
 │   ├── iv_history.py           # rolling IV persistence (append / load)
-│   ├── order_executor.py       # AlpacaOrderExecutor: OCC symbol + limit order
+│   ├── order_executor.py       # OrderIntent + execute() — single/multi-leg Alpaca orders
 │   ├── thesis_generator.py     # Claude API thesis (opus-4-7, adaptive thinking)
+│   ├── router.py               # strategy router: ticker → strategy instance via strategies.toml
 │   ├── logger.py               # structlog dual-renderer
-│   ├── state_store.py          # atomic JSON read/write for wheel_state.json
+│   ├── state_store.py          # flat-file + per-strategy state API
 │   ├── adapters/
-│   │   ├── base.py             # DataAdapter Protocol
-│   │   ├── fixture_adapter.py  # loads from fixtures/
-│   │   └── alpaca_adapter.py   # live Alpaca paper trading (IEX feed)
+│   │   ├── base.py             # DataAdapter + OptionsDataAdapter Protocols
+│   │   ├── fixture_adapter.py  # loads from fixtures/ (stubs new A4 methods)
+│   │   └── alpaca_adapter.py   # live Alpaca (IEX feed, get_quote, get_multi_ohlcv)
 │   └── strategies/
-│       ├── base.py             # Strategy Protocol + FilterResult
-│       ├── registry.py
+│       ├── base.py             # Strategy/Filter/TradeResult Protocols + FilterResult
+│       ├── registry.py         # @register decorator + get() / list_strategies()
+│       ├── spreads/            # Track B — defined-risk option spreads (in progress)
 │       └── wheel/
 │           ├── state.py        # WheelState Pydantic model
 │           ├── filters.py      # 7 filter classes
-│           └── strategy.py     # WheelStrategy (two-pass evaluation)
+│           ├── backtester.py   # BS pricing helpers + simulate_wheel_trade()
+│           └── strategy.py     # WheelStrategy: emit_signal_card + simulate_trade
 └── tests/
     ├── unit/                   # 12 test modules
     └── integration/
@@ -358,12 +387,17 @@ claude-trader/
 
 | Area | Detail |
 |---|---|
-| **Filter Protocol** | All 7 filters implement `run(market_data, state, config) → FilterResult` — swappable without touching `WheelStrategy` |
+| **Strategy Protocol** | `Strategy.emit_signal_card(ticker, adapter, state, context?) → SignalCard` — orchestrator knows nothing about Wheel; each strategy owns its full signal assembly |
+| **Multi-strategy schema** | `SignalCard` uses `signal_type: str`, `legs: list[Leg]`, `indicators: dict`, `payload: dict` — strategy-agnostic, supports 1–4 leg trades |
+| **Strategy router** | `config/strategies.toml` maps tickers → strategy names; `src/router.py` resolves + builds the right strategy instance per ticker |
+| **Per-strategy state** | `state/{strategy}.json` layout via `get_strategy_state()`/`set_strategy_state()` — different strategies don't share state files |
+| **Multi-leg executor** | `OrderIntent` + `execute()` in `order_executor.py` routes single equity, single option, or 2–4 leg combos to the correct Alpaca API |
+| **Pluggable backtester** | `Strategy.simulate_trade(card, future_ohlcv) → TradeResult` Protocol — each strategy owns its P&L model; BS math lives in `wheel/backtester.py` |
+| **DataAdapter split** | `DataAdapter` (all strategies) + `OptionsDataAdapter` (options strategies) with `get_multi_ohlcv`, `get_quote`, `get_option_quote` |
+| **Filter Protocol** | All 7 Wheel filters implement `run(market_data, state, config) → FilterResult` — swappable without touching `WheelStrategy` |
 | **Env guards** | `AlpacaPaperAdapter` raises a clear `RuntimeError` on missing `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` via `_require_env()` |
 | **Deterministic fixtures** | `FixtureAdapter` uses a pinned `FIXTURE_REFERENCE_DATE` constant instead of `date.today()` — DTE calculations never drift |
-| **Bollinger bounds** | Phase A: `%B ≤ 0.20`; Phase B: `%B ≥ 0.80`; raw value clamped to `[0, 1]` before the gate |
 | **Structured logging** | `structlog` wired across all modules — every filter result, signal emitted, and order placed is logged at `debug`/`info` level |
-| **Delta guard** | `signal_engine` raises `RuntimeError` if `delta_estimate` is absent from filter adjustments rather than silently defaulting to `0.0` |
 
 ---
 
@@ -378,3 +412,6 @@ claude-trader/
 | **5 — Dashboard** | ✅ Complete | Streamlit UI: ticker grid, IV history chart, signal table, phase transition forms, configuration |
 | **6 — Backtesting** | ✅ Complete | Walk-forward replay on historical OHLCV; BS-simulated entries; equity curve, win rate, premium collected, assignment rate — integrated as a Backtest page in the dashboard |
 | **Dashboard UX hardening** | ✅ Complete | Alpaca as default adapter, View Details navigation, sticky sidebar page state, adapter-aware ticker dropdowns, fixture-availability filtering |
+| **Track A — Architecture refactor** | ✅ Complete | Multi-strategy foundation: generalized SignalCard + Leg schema, Strategy.emit_signal_card Protocol, per-strategy state store, DataAdapter/OptionsDataAdapter split, strategy router (config/strategies.toml), OrderIntent multi-leg executor, Strategy.simulate_trade backtester split — 198 tests passing |
+| **Track B — Put Credit Spreads** | 🔄 In progress | Defined-risk 2-leg option spreads on SPY/QQQ/IWM; multi-leg Alpaca orders |
+| **Track B — RSI(2) ETF basket** | ⏳ Upcoming | Cross-sectional mean-reversion on 15-ETF universe; equity-only, daily cron |

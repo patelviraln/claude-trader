@@ -52,17 +52,19 @@ def run_one(ticker, adapter, tmp_state, tmp_path):
 class TestScenario1_WXYZ_ClearPutSignal:
     def test_produces_sell_put(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("WXYZ", adapter, tmp_state, tmp_path)
-        assert card.phase == "SELL_PUT", f"Expected SELL_PUT, got {card.phase} — reason: {card.no_signal_reason}"
+        assert card.signal_type == "SELL_PUT", f"Expected SELL_PUT, got {card.signal_type} — reason: {card.no_signal_reason}"
 
     def test_has_strike_and_expiry(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("WXYZ", adapter, tmp_state, tmp_path)
-        assert card.recommended_strike is not None
-        assert card.recommended_expiry is not None
+        assert card.legs, "Expected at least one leg"
+        assert card.legs[0].strike is not None
+        assert card.legs[0].expiry is not None
 
     def test_delta_is_negative(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("WXYZ", adapter, tmp_state, tmp_path)
-        assert card.delta_estimate is not None
-        assert card.delta_estimate < 0
+        assert card.legs, "Expected at least one leg"
+        assert card.legs[0].delta_estimate is not None
+        assert card.legs[0].delta_estimate < 0
 
     def test_appended_to_jsonl(self, adapter, tmp_state, tmp_path):
         card, signals_path = run_one("WXYZ", adapter, tmp_state, tmp_path)
@@ -75,18 +77,19 @@ class TestScenario1_WXYZ_ClearPutSignal:
 class TestScenario2_CALLX_ClearCallSignal:
     def test_produces_sell_call(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("CALLX", adapter, tmp_state, tmp_path)
-        assert card.phase == "SELL_CALL", f"Expected SELL_CALL, got {card.phase} — reason: {card.no_signal_reason}"
+        assert card.signal_type == "SELL_CALL", f"Expected SELL_CALL, got {card.signal_type} — reason: {card.no_signal_reason}"
 
     def test_delta_is_positive(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("CALLX", adapter, tmp_state, tmp_path)
-        assert card.delta_estimate is not None
-        assert card.delta_estimate > 0
+        assert card.legs, "Expected at least one leg"
+        assert card.legs[0].delta_estimate is not None
+        assert card.legs[0].delta_estimate > 0
 
 
 class TestScenario3_EMAFAIL:
     def test_produces_no_signal(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("EMAFAIL", adapter, tmp_state, tmp_path)
-        assert card.phase == "NO_SIGNAL"
+        assert card.signal_type == "NO_SIGNAL"
 
     def test_reason_mentions_ema(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("EMAFAIL", adapter, tmp_state, tmp_path)
@@ -98,14 +101,14 @@ class TestScenario4_RSIFAIL:
     def test_produces_no_signal(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("RSIFAIL", adapter, tmp_state, tmp_path)
         # Either EMA or RSI may fail depending on generated prices
-        assert card.phase == "NO_SIGNAL"
+        assert card.signal_type == "NO_SIGNAL"
 
 
 class TestScenario5_LOWCONF:
     def test_runs_without_error(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("LOWCONF", adapter, tmp_state, tmp_path)
         # Should not raise; may be SELL_PUT or NO_SIGNAL depending on fixture
-        assert card.phase in ("SELL_PUT", "SELL_CALL", "NO_SIGNAL")
+        assert card.signal_type in ("SELL_PUT", "SELL_CALL", "NO_SIGNAL")
 
     def test_signal_card_is_serializable(self, adapter, tmp_state, tmp_path):
         card, _ = run_one("LOWCONF", adapter, tmp_state, tmp_path)

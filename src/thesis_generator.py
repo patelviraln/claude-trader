@@ -68,28 +68,21 @@ def generate_thesis(
         return ""
 
     # Build market snapshot for the user message
-    ir = card.indicator_readings
+    leg = card.legs[0] if card.legs else None
     snapshot: dict[str, Any] = {
         "ticker": card.ticker,
-        "phase": card.phase,
+        "signal_type": card.signal_type,
         "underlying_price": card.underlying_price,
-        "recommended_strike": card.recommended_strike,
-        "recommended_expiry": card.recommended_expiry,
-        "dte": card.dte,
-        "delta_estimate": card.delta_estimate,
-        "iv_rank": card.iv_rank,
+        "strike": leg.strike if leg else None,
+        "expiry": leg.expiry if leg else None,
+        "delta_estimate": leg.delta_estimate if leg else None,
+        "option_mid": leg.limit_price if leg else None,
+        "dte": card.payload.get("dte"),
+        "iv_rank": card.payload.get("iv_rank"),
         "confidence_tier": card.confidence_tier,
         "risk_flags": card.risk_flags,
     }
-    if ir:
-        snapshot.update({
-            "ema50": ir.ema50,
-            "ema50_slope": ir.ema50_slope,
-            "rsi14": ir.rsi14,
-            "bb_percent_b": ir.bb_percent_b,
-            "volume_node_nearest": ir.volume_node_nearest,
-            "volume_node_type": ir.volume_node_type,
-        })
+    snapshot.update(card.indicators)
 
     tools = [
         {
