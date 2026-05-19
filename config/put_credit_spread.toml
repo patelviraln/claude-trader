@@ -1,0 +1,17 @@
+# Put Credit Spread strategy parameters
+# Loaded by PutCreditSpreadStrategy.load_config() at startup.
+# All filter parameters are tunable here; nothing is hardcoded in the strategy.
+
+[put_credit_spread]
+ema_period            = 50
+rsi_min               = 35.0
+rsi_max               = 65.0
+dte_min               = 30
+dte_max               = 45
+short_delta_target    = 0.30   # target short put delta (absolute value)
+short_delta_tolerance = 0.05
+long_delta_target     = 0.15   # target long put delta (absolute value) — protection leg
+long_delta_tolerance  = 0.07
+min_iv_rank           = 25.0   # hard stop below this; premiums too thin
+min_credit            = 0.40   # minimum net credit per share to proceed ($0.40 = $40/spread)
+max_spread_width      = 15.0   # maximum width between strikes ($15)
