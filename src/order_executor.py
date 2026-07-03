@@ -130,6 +130,47 @@ class AlpacaOrderExecutor:
             })
         return out
 
+    def get_account(self) -> dict[str, Any]:
+        """Return account equity / buying power snapshot."""
+        acct = self._client.get_account()
+        return {
+            "equity": float(acct.equity) if acct.equity is not None else None,
+            "cash": float(acct.cash) if acct.cash is not None else None,
+            "buying_power": float(acct.buying_power) if acct.buying_power is not None else None,
+            "options_buying_power": (
+                float(acct.options_buying_power)
+                if getattr(acct, "options_buying_power", None) is not None else None
+            ),
+            "portfolio_value": (
+                float(acct.portfolio_value) if acct.portfolio_value is not None else None
+            ),
+        }
+
+    def get_closed_orders(self, days_back: int = 90) -> list[dict[str, Any]]:
+        """Return filled orders (any fill qty > 0) from the last N days as plain dicts."""
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+
+        after = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days_back)
+        req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=after, limit=500)
+        orders = self._client.get_orders(req)
+
+        out: list[dict[str, Any]] = []
+        for o in orders:
+            filled_qty = float(o.filled_qty or 0)
+            if filled_qty <= 0:
+                continue
+            out.append({
+                "order_id": str(o.id),
+                "symbol": o.symbol,
+                "side": str(o.side).replace("OrderSide.", "").lower(),
+                "filled_qty": filled_qty,
+                "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
+                "filled_at": o.filled_at.isoformat() if o.filled_at else None,
+                "status": str(o.status),
+            })
+        return out
+
     def close_position(self, symbol: str, qty: float | None = None) -> dict[str, Any]:
         """Close an open position (market order on the opposite side).
 
