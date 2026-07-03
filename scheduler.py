@@ -46,7 +46,64 @@ def build_adapter(adapter_name: str):
 
 
 def run_job(config_path: Path) -> None:
-    """Execute one full signal scan — called by the scheduler or --run-now."""
+    """Execute one full signal scan — called by the scheduler or --run-now.
+
+    Two config styles are supported:
+      - strategies.toml (has a [router] section): tickers are grouped by their
+        assigned strategy and each group is dispatched with that strategy.
+      - legacy wheel.toml ([scheduler] tickers list): everything runs as Wheel.
+    """
+    with open(config_path, "rb") as f:
+        raw = tomllib.load(f)
+
+    if "router" in raw:
+        _run_job_routed(raw, config_path)
+    else:
+        _run_job_legacy_wheel(config_path)
+
+
+def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
+    from src.router import grouped_assignments
+
+    sched_cfg = router_cfg.get("scheduler", {})
+    adapter_name: str = sched_cfg.get("adapter", "alpaca")
+    groups = grouped_assignments(router_cfg)
+    groups = {name: tickers for name, tickers in groups.items() if tickers}
+
+    if not groups:
+        log.warning("scheduler.no_tickers", msg="No ticker assignments in [router.assignments]")
+        return
+
+    log.info("scheduler.run_start", groups=groups, adapter=adapter_name)
+
+    try:
+        adapter = build_adapter(adapter_name)
+    except Exception as exc:
+        log.error("scheduler.adapter_error", error=str(exc))
+        return
+
+    results = {"ok": [], "error": []}
+    for strategy_name, tickers in groups.items():
+        for ticker in tickers:
+            try:
+                cards = run_signals_batch(
+                    tickers=[ticker],
+                    adapter=adapter,
+                    print_output=True,
+                    strategy_name=strategy_name,
+                    router_config_path=config_path,
+                )
+                results["ok"].append(ticker)
+                log.info("scheduler.ticker_done", ticker=ticker, strategy=strategy_name,
+                         signal_type=cards[0].signal_type if cards else "?")
+            except Exception as exc:
+                results["error"].append(ticker)
+                log.error("scheduler.ticker_error", ticker=ticker, strategy=strategy_name, error=str(exc))
+
+    log.info("scheduler.run_complete", ok=results["ok"], errors=results["error"])
+
+
+def _run_job_legacy_wheel(config_path: Path) -> None:
     sched_cfg = load_scheduler_config(config_path)
     tickers: list[str] = sched_cfg.get("tickers", [])
     adapter_name: str = sched_cfg.get("adapter", "alpaca")
@@ -86,8 +143,13 @@ def run_job(config_path: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Wheel Strategy Daily Scheduler")
-    parser.add_argument("--config", default="config/wheel.toml", help="Path to wheel config TOML")
+    parser = argparse.ArgumentParser(description="Daily Signal Scheduler (multi-strategy)")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to config TOML. Defaults to config/strategies.toml when present "
+             "(router mode), otherwise config/wheel.toml (legacy Wheel-only mode).",
+    )
     parser.add_argument(
         "--run-now",
         action="store_true",
@@ -97,7 +159,12 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_logging(args.log_level)
-    config_path = Path(args.config)
+    if args.config is not None:
+        config_path = Path(args.config)
+    elif Path("config/strategies.toml").exists():
+        config_path = Path("config/strategies.toml")
+    else:
+        config_path = Path("config/wheel.toml")
 
     if args.run_now:
         log.info("scheduler.manual_trigger")

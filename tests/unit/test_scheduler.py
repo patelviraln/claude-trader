@@ -26,6 +26,17 @@ def _write_toml(tmp_path: Path, scheduler_section: dict) -> Path:
     return config_path
 
 
+def _write_router_toml(tmp_path: Path, assignments: dict[str, str]) -> Path:
+    """Write a minimal strategies.toml-style router config and return its path."""
+    lines = ['[router]\ndefault_strategy = "wheel"\n\n[router.assignments]\n']
+    for ticker, strat in assignments.items():
+        lines.append(f'{ticker} = "{strat}"\n')
+    lines.append('\n[scheduler]\nadapter = "fixture"\n')
+    config_path = tmp_path / "strategies.toml"
+    config_path.write_text("".join(lines), encoding="utf-8")
+    return config_path
+
+
 # ---------------------------------------------------------------------------
 # load_scheduler_config
 # ---------------------------------------------------------------------------
@@ -131,3 +142,50 @@ class TestRunJob:
             from scheduler import run_job
             run_job(cfg)
         assert mock_run.call_args.kwargs["config_path"] == cfg
+
+
+# ---------------------------------------------------------------------------
+# run_job — router mode (strategies.toml with [router] section)
+# ---------------------------------------------------------------------------
+
+class TestRunJobRouted:
+    def test_dispatches_each_ticker_with_its_strategy(self, tmp_path):
+        cfg = _write_router_toml(tmp_path, {"AAPL": "wheel", "NVDA": "wheel", "TLT": "rsi2"})
+        mock_card = MagicMock()
+        mock_card.signal_type = "NO_SIGNAL"
+        with patch("scheduler.build_adapter"), \
+             patch("scheduler.run_signals_batch", return_value=[mock_card]) as mock_run:
+            from scheduler import run_job
+            run_job(cfg)
+
+        assert mock_run.call_count == 3
+        dispatched = {
+            c.kwargs["tickers"][0]: c.kwargs["strategy_name"]
+            for c in mock_run.call_args_list
+        }
+        assert dispatched == {"AAPL": "wheel", "NVDA": "wheel", "TLT": "rsi2"}
+        assert all(c.kwargs["router_config_path"] == cfg for c in mock_run.call_args_list)
+
+    def test_continues_after_per_ticker_error(self, tmp_path):
+        cfg = _write_router_toml(tmp_path, {"AAPL": "wheel", "TLT": "rsi2"})
+        mock_card = MagicMock()
+        mock_card.signal_type = "NO_SIGNAL"
+
+        def side_effect(**kwargs):
+            if kwargs["tickers"][0] == "AAPL":
+                raise RuntimeError("boom")
+            return [mock_card]
+
+        with patch("scheduler.build_adapter"), \
+             patch("scheduler.run_signals_batch", side_effect=side_effect) as mock_run:
+            from scheduler import run_job
+            run_job(cfg)  # must not raise
+
+        assert mock_run.call_count == 2
+
+    def test_skips_when_no_assignments(self, tmp_path):
+        cfg = _write_router_toml(tmp_path, {})
+        with patch("scheduler.run_signals_batch") as mock_run:
+            from scheduler import run_job
+            run_job(cfg)
+        mock_run.assert_not_called()

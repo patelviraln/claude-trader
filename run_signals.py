@@ -79,7 +79,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--thesis",
         action="store_true",
-        help="Generate AI thesis text via Claude API (requires ANTHROPIC_API_KEY)",
+        help="Generate AI thesis text via OpenRouter (requires OPENROUTER_API_KEY; "
+             "models set by SCANNER_MODEL / SCANNER_FALLBACK_MODEL)",
     )
     parser.add_argument(
         "--execute",
@@ -91,7 +92,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="NAME",
         help="Strategy name override (e.g. 'wheel', 'put_credit_spread', 'rsi2'). "
-             "Defaults to 'wheel' when --config points to wheel.toml.",
+             "If omitted, each ticker is resolved via config/strategies.toml when it "
+             "exists, otherwise falls back to 'wheel'.",
     )
     return parser.parse_args()
 
@@ -130,6 +132,11 @@ def main() -> None:
         from src.order_executor import AlpacaOrderExecutor
         executor = AlpacaOrderExecutor()
 
+    # No explicit --strategy: route per-ticker via strategies.toml when present
+    strategy_name = args.strategy
+    if strategy_name is None and Path("config/strategies.toml").exists():
+        strategy_name = "auto"
+
     adapter = build_adapter(args.adapter)
     cards = run_signals_batch(
         tickers=args.tickers,
@@ -141,6 +148,7 @@ def main() -> None:
         generate_thesis=args.thesis,
         execute=args.execute,
         executor=executor,
+        strategy_name=strategy_name,
     )
 
     if args.json_only:
