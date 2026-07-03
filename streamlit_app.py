@@ -353,8 +353,14 @@ def page_ticker_detail() -> None:
         iv = (last_sig.get("payload") or {}).get("iv_rank")
         c5.metric("IV Rank", f"{iv:.1f}%" if iv is not None else "—")
 
-    # --- IV History chart ---
-    if iv_series:
+    # --- IV History chart (options strategies only — equity strategies have no IV) ---
+    if strat in EQUITY_ONLY_STRATEGIES:
+        ind = (last_sig or {}).get("indicators") or {}
+        if ind.get("rsi2") is not None:
+            st.caption(f"Latest indicators: RSI(2) {ind['rsi2']:.1f} · "
+                       f"SMA200 ${ind.get('sma200') or 0:.2f} · close ${ind.get('close') or 0:.2f}")
+        iv_series = []
+    elif iv_series:
         st.subheader("IV History")
         df_iv = pd.DataFrame(iv_series)
         fig = go.Figure()
@@ -555,6 +561,19 @@ def _positions_body() -> None:
         st.error(f"Could not fetch positions: {exc}")
         return
 
+    # --- Account panel ---
+    try:
+        acct = executor.get_account()
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("Account Equity", f"${acct['equity']:,.0f}" if acct.get("equity") else "—")
+        a2.metric("Cash",           f"${acct['cash']:,.0f}" if acct.get("cash") else "—")
+        a3.metric("Buying Power",   f"${acct['buying_power']:,.0f}" if acct.get("buying_power") else "—")
+        obp = acct.get("options_buying_power")
+        a4.metric("Options BP",     f"${obp:,.0f}" if obp else "—")
+        st.divider()
+    except Exception as exc:
+        st.caption(f"Account snapshot unavailable: {exc}")
+
     rules = load_exit_rules(ROUTER_PATH if ROUTER_PATH.exists() else CONFIG_PATH)
     decisions = {p.symbol: evaluate_position(p, rules) for p in positions}
 
@@ -623,6 +642,52 @@ def _positions_body() -> None:
                     st.rerun(scope="fragment")
                 except Exception as exc:
                     st.error(f"Close failed: {exc}")
+
+    # --- State reconciliation ---
+    st.subheader("Strategy State Sync")
+    st.caption("Aligns state files (wheel phases, rsi2 in-position, PCS open-spread) "
+               "with live positions. The scheduler does this automatically before each scan.")
+    if st.button("Sync strategy state from positions"):
+        from src.reconcile import sync_state_from_positions
+        try:
+            changes = sync_state_from_positions(positions, _router_cfg() or {})
+            if changes:
+                for c in changes:
+                    st.toast(f"Synced {c['ticker']} ({c['strategy']})", icon="🔄")
+                st.rerun(scope="app")  # state shown on other pages changed
+            else:
+                st.toast("All strategy state already in sync", icon="✅")
+        except Exception as exc:
+            st.error(f"Sync failed: {exc}")
+
+    # --- Performance (realized P&L from fill ledger) ---
+    st.subheader("Performance — Realized P&L")
+    try:
+        from src.pnl_ledger import realized_pnl_summary
+        realized = realized_pnl_summary(executor, _router_cfg() or None)
+        p1, p2 = st.columns([1, 3])
+        p1.metric("Total Realized", f"${realized['total']:,.2f}")
+        if realized["by_strategy"]:
+            with p2:
+                sc = st.columns(max(len(realized["by_strategy"]), 1))
+                for i, (strat, pnl) in enumerate(sorted(realized["by_strategy"].items())):
+                    sc[i].metric(strat, f"${pnl:,.2f}")
+        closed_rows = [r for r in realized["by_symbol"] if r["closed_qty"] > 0]
+        if closed_rows:
+            st.dataframe(
+                pd.DataFrame(closed_rows),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "realized_pnl": st.column_config.NumberColumn("Realized P&L", format="$%.2f"),
+                    "closed_qty":   st.column_config.NumberColumn("Closed Qty"),
+                    "open_qty":     st.column_config.NumberColumn("Still Open"),
+                },
+            )
+        else:
+            st.caption("No closed round-trips yet — realized P&L appears after the first "
+                       "position is opened and closed.")
+    except Exception as exc:
+        st.caption(f"Fill ledger unavailable: {exc}")
 
     # --- Event log ---
     events = load_position_events(n=25)
@@ -1126,21 +1191,33 @@ def _config_strategy_tab() -> None:
 @st.fragment
 def _config_scheduler_tab() -> None:
     st.subheader("Daily Scheduler")
-    st.caption("Controls the `python scheduler.py` cron job.")
 
-    cfg   = _load_toml(CONFIG_PATH)
+    routed = ROUTER_PATH.exists()
+    if routed:
+        # Router mode: scheduler.py reads [scheduler] from strategies.toml,
+        # and the ticker universe comes from [router.assignments]
+        st.caption("Router mode — settings saved to `config/strategies.toml`. "
+                   "Tickers come from the **Router** tab assignments, not a list here. "
+                   "Register unattended runs with `scripts/register_daily_task.ps1`.")
+        cfg = _router_cfg()
+        cfg_path: str | Path = ROUTER_PATH
+    else:
+        st.caption("Legacy mode — settings saved to `config/wheel.toml` "
+                   "(create config/strategies.toml to enable multi-strategy routing).")
+        cfg = _load_toml(CONFIG_PATH)
+        cfg_path = CONFIG_PATH
     sched = cfg.get("scheduler", {})
 
     with st.form("scheduler_form"):
-        all_tracked = tracked_tickers(states_data(), signals_data())
-        current_tickers = sched.get("tickers", [])
-
-        # Allow free-text entry for new tickers not yet in state
-        sched_tickers = st.multiselect(
-            "Tickers to scan daily",
-            options=sorted(set(all_tracked) | set(current_tickers)),
-            default=current_tickers,
-        )
+        sched_tickers = sched.get("tickers", [])
+        if not routed:
+            all_tracked = tracked_tickers(states_data(), signals_data())
+            # Allow free-text entry for new tickers not yet in state
+            sched_tickers = st.multiselect(
+                "Tickers to scan daily",
+                options=sorted(set(all_tracked) | set(sched_tickers)),
+                default=sched_tickers,
+            )
         adapter = st.radio("Adapter", ["alpaca", "fixture"],
                            index=0 if sched.get("adapter", "alpaca") == "alpaca" else 1,
                            horizontal=True)
@@ -1153,15 +1230,20 @@ def _config_scheduler_tab() -> None:
         timezone   = st.text_input("Timezone", value=sched.get("timezone", "America/New_York"))
 
         if st.form_submit_button("Save Scheduler Settings", type="primary"):
-            cfg["scheduler"] = {
-                "tickers":    sched_tickers,
+            new_sched = {
                 "adapter":    adapter,
                 "run_hour":   run_hour,
                 "run_minute": run_minute,
                 "timezone":   timezone,
             }
-            _save_toml(CONFIG_PATH, cfg)
-            st.toast("Scheduler settings saved.", icon="✅")
+            if not routed:
+                new_sched["tickers"] = sched_tickers
+            cfg["scheduler"] = new_sched
+            if routed:
+                _save_router_cfg(cfg)
+            else:
+                _save_toml(cfg_path, cfg)
+            st.toast(f"Scheduler settings saved to {cfg_path}.", icon="✅")
 
 
 @st.fragment
