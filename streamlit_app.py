@@ -534,6 +534,129 @@ def page_run_signals() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Page: Positions (Phase 8) + exit-rule preview (Phase 9)
+# ---------------------------------------------------------------------------
+
+
+@st.cache_resource(show_spinner=False)
+def _get_executor():
+    from src.order_executor import AlpacaOrderExecutor
+    return AlpacaOrderExecutor()
+
+
+def _positions_body() -> None:
+    from src.exit_engine import evaluate_position, load_exit_rules
+    from src.positions import fetch_positions, load_position_events
+
+    executor = _get_executor()
+    try:
+        positions = fetch_positions(executor, _router_cfg() or None)
+    except Exception as exc:
+        st.error(f"Could not fetch positions: {exc}")
+        return
+
+    rules = load_exit_rules(ROUTER_PATH if ROUTER_PATH.exists() else CONFIG_PATH)
+    decisions = {p.symbol: evaluate_position(p, rules) for p in positions}
+
+    total_upl = sum(p.unrealized_pnl or 0.0 for p in positions)
+    total_mv  = sum(p.market_value or 0.0 for p in positions)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Open Positions",  len(positions))
+    m2.metric("Market Value",    f"${total_mv:,.2f}")
+    m3.metric("Unrealized P&L",  f"${total_upl:,.2f}")
+    firing = [d for d in decisions.values() if d is not None]
+    m4.metric("Exit Rules Firing", len(firing))
+
+    if not positions:
+        st.info("No open positions in the paper account. Place orders from **Run Signals** "
+                "with *Place paper orders* checked.")
+    else:
+        rows = []
+        for p in positions:
+            d = decisions.get(p.symbol)
+            rows.append({
+                "Symbol":       p.symbol,
+                "Strategy":     p.strategy_name or "—",
+                "Type":         f"{p.side} {p.option_type or p.asset_class}",
+                "Qty":          p.qty,
+                "Entry":        p.avg_entry_price,
+                "Mark":         p.current_price,
+                "Unreal. P&L":  p.unrealized_pnl,
+                "DTE":          p.dte,
+                "% Max Profit": p.pct_max_profit,
+                "Exit Rule":    f"⚠ {d.reason}" if d else "—",
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Entry":        st.column_config.NumberColumn(format="$%.2f"),
+                "Mark":         st.column_config.NumberColumn(format="$%.2f"),
+                "Unreal. P&L":  st.column_config.NumberColumn(format="$%.2f"),
+                "% Max Profit": st.column_config.ProgressColumn(
+                    format="%.1f%%", min_value=-100, max_value=100),
+            },
+        )
+        if firing:
+            for d in firing:
+                st.warning(f"**{d.symbol}** — {d.reason}: {d.detail} "
+                           f"(the scheduler will close this on its next run)")
+
+        # --- Manual close ---
+        st.subheader("Close a Position")
+        with st.form("close_position_form"):
+            c1, c2 = st.columns([3, 1])
+            sym = c1.selectbox("Position", [p.symbol for p in positions])
+            if c2.form_submit_button("Close", type="primary"):
+                from src.positions import append_position_event
+                try:
+                    result = executor.close_position(sym)
+                    append_position_event({
+                        "event": "manual_close_submitted",
+                        "symbol": sym,
+                        "reason": "manual",
+                        "order_id": result.get("order_id"),
+                        "status": result.get("status"),
+                    })
+                    st.toast(f"Close submitted for {sym} [{result.get('status')}]", icon="✅")
+                    st.rerun(scope="fragment")
+                except Exception as exc:
+                    st.error(f"Close failed: {exc}")
+
+    # --- Event log ---
+    events = load_position_events(n=25)
+    if events:
+        st.subheader("Recent Position Events")
+        ev_rows = [
+            {
+                "Time":    (e.get("ts") or "")[:16].replace("T", " "),
+                "Event":   e.get("event", "—"),
+                "Symbol":  e.get("symbol", "—"),
+                "Reason":  e.get("reason", "—"),
+                "Detail":  e.get("detail", ""),
+                "Status":  e.get("status", "—"),
+            }
+            for e in events
+        ]
+        st.dataframe(pd.DataFrame(ev_rows), use_container_width=True, hide_index=True)
+
+
+def page_positions() -> None:
+    st.title("Positions")
+    st.caption("Live paper-account positions, mark-to-market P&L, and exit-rule status.")
+
+    if not _alpaca_available():
+        st.info("Positions require Alpaca credentials — set ALPACA_API_KEY + "
+                "ALPACA_SECRET_KEY in .env.")
+        return
+
+    auto_refresh = st.toggle("Auto-refresh 30s", value=False, key="pos_refresh")
+    body = st.fragment(_positions_body, run_every=30 if auto_refresh else None)
+    body()
+
+
+# ---------------------------------------------------------------------------
 # Page: Backtest
 # ---------------------------------------------------------------------------
 
@@ -1128,6 +1251,7 @@ def page_configuration() -> None:
 # ---------------------------------------------------------------------------
 
 PAGE_DASHBOARD     = st.Page(page_dashboard,     title="Dashboard",     icon="📊", url_path="dashboard", default=True)
+PAGE_POSITIONS     = st.Page(page_positions,     title="Positions",     icon="💼", url_path="positions")
 PAGE_TICKER_DETAIL = st.Page(page_ticker_detail, title="Ticker Detail", icon="🔍", url_path="ticker_detail")
 PAGE_RUN_SIGNALS   = st.Page(page_run_signals,   title="Run Signals",   icon="⚡", url_path="run_signals")
 PAGE_BACKTEST      = st.Page(page_backtest,      title="Backtest",      icon="📈", url_path="backtest")
@@ -1147,6 +1271,7 @@ def main() -> None:
 
     nav = st.navigation([
         PAGE_DASHBOARD,
+        PAGE_POSITIONS,
         PAGE_TICKER_DETAIL,
         PAGE_RUN_SIGNALS,
         PAGE_BACKTEST,

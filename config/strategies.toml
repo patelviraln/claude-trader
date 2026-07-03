@@ -34,6 +34,13 @@ run_hour   = 9
 run_minute = 35
 timezone   = "America/New_York"
 
+# Phase 9 — exit rules, evaluated on open short-option positions BEFORE new entries
+[exit_rules]
+enabled            = true
+profit_target_pct  = 50.0   # close when >= this % of premium has decayed
+dte_close          = 21     # close anything at or under this many days to expiry
+stop_loss_multiple = 2.0    # close when mark >= this multiple of premium collected
+
 [strategies.wheel]
 config_path = "config/wheel.toml"
 

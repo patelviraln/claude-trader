@@ -62,6 +62,23 @@ def run_job(config_path: Path) -> None:
         _run_job_legacy_wheel(config_path)
 
 
+def _run_exits(router_cfg: dict, adapter_name: str) -> None:
+    """Phase 9: evaluate exit rules on open positions before scanning for entries."""
+    if adapter_name != "alpaca":
+        return  # fixture runs have no live account to manage
+    rules = {**{"enabled": True}, **router_cfg.get("exit_rules", {})}
+    if not rules.get("enabled", True):
+        return
+    try:
+        from src.exit_engine import DEFAULT_RULES, run_exits
+        from src.order_executor import AlpacaOrderExecutor
+        executor = AlpacaOrderExecutor()
+        decisions = run_exits(executor, rules={**DEFAULT_RULES, **rules}, router_cfg=router_cfg)
+        log.info("scheduler.exits_done", closed=[f"{d.symbol}:{d.reason}" for d in decisions])
+    except Exception as exc:
+        log.error("scheduler.exits_error", error=str(exc))
+
+
 def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
     from src.router import grouped_assignments
 
@@ -75,6 +92,8 @@ def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
         return
 
     log.info("scheduler.run_start", groups=groups, adapter=adapter_name)
+
+    _run_exits(router_cfg, adapter_name)
 
     try:
         adapter = build_adapter(adapter_name)
