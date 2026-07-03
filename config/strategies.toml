@@ -22,10 +22,11 @@ SPY  = "put_credit_spread"
 QQQ  = "put_credit_spread"
 IWM  = "put_credit_spread"
 
-# RSI(2) ETF basket (Phase B2 — uncomment when implemented)
-# EEM  = "rsi2"
-# EFA  = "rsi2"
-# TLT  = "rsi2"
+# RSI(2) ETF basket (Phase B2)
+EEM  = "rsi2"
+EFA  = "rsi2"
+TLT  = "rsi2"
+GLD  = "rsi2"
 
 [scheduler]
 adapter    = "alpaca"
@@ -39,5 +40,5 @@ config_path = "config/wheel.toml"
 [strategies.put_credit_spread]
 config_path = "config/put_credit_spread.toml"
 
-# [strategies.rsi2]
-# config_path = "config/rsi2.toml"
+[strategies.rsi2]
+config_path = "config/rsi2.toml"

@@ -1,0 +1,15 @@
+# RSI(2) ETF mean-reversion strategy configuration (Phase B2)
+[rsi2]
+rsi_period        = 2
+entry_rsi_max     = 10.0   # enter when RSI(2) below this
+exit_rsi_min      = 70.0   # exit when RSI(2) above this
+trend_filter_ma   = 200    # long-only above this SMA
+max_hold_days     = 5
+position_size_pct = 5.0    # % of account equity per signal
+# TODO(Phase 10): replace with adapter.get_account() via RiskManager
+paper_starting_equity = 25000.0
+commission_per_share  = 0.0
+slippage_pct          = 0.05   # half-spread slippage per fill, in %
+
+[universe]
+tickers = ["SPY", "QQQ", "IWM", "EEM", "EFA", "TLT", "GLD", "XLE", "XLF", "XLK", "XLV", "XLP", "XLY", "XLU", "XLI"]
