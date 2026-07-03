@@ -7,11 +7,15 @@ from pathlib import Path
 import pytest
 
 from src.dashboard_data import (
+    filter_signals,
     get_all_ticker_states,
     get_all_tracked_tickers,
     get_iv_series,
     get_last_signal,
     get_recent_signals,
+    last_signal_by_ticker,
+    load_all_signals,
+    tracked_tickers,
 )
 
 
@@ -163,3 +167,61 @@ class TestGetAllTrackedTickers:
         result = get_all_tracked_tickers(state_path, signals_path)
         assert "WXYZ" not in result
         assert "AAPL" in result
+
+
+# ---------------------------------------------------------------------------
+# Single-pass loaders (dashboard cache layer)
+# ---------------------------------------------------------------------------
+
+class TestLoadAllSignals:
+    def test_returns_chronological_file_order(self, tmp_path):
+        p = tmp_path / "signals.jsonl"
+        _write_signals(p, [_sig(ts="2026-05-14T10:00:00Z"), _sig(ts="2026-05-16T10:00:00Z")])
+        records = load_all_signals(p)
+        assert [r["signal_timestamp"] for r in records] == [
+            "2026-05-14T10:00:00Z", "2026-05-16T10:00:00Z"]
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert load_all_signals(tmp_path / "missing.jsonl") == []
+
+    def test_skips_malformed_lines(self, tmp_path):
+        p = tmp_path / "signals.jsonl"
+        p.write_text('{"ticker":"AAPL"}\nnot-json\n\n{"ticker":"NVDA"}\n', encoding="utf-8")
+        assert len(load_all_signals(p)) == 2
+
+
+class TestFilterSignals:
+    def test_matches_get_recent_signals(self, tmp_path):
+        p = tmp_path / "signals.jsonl"
+        _write_signals(p, [_sig("AAPL"), _sig("NVDA"), _sig("AAPL")])
+        records = load_all_signals(p)
+        assert filter_signals(records, ticker="AAPL") == get_recent_signals(p, ticker="AAPL")
+
+    def test_newest_first_with_limit(self, tmp_path):
+        records = [_sig(ts=f"2026-05-{d:02d}T10:00:00Z") for d in range(1, 11)]
+        result = filter_signals(records, n=3)
+        assert len(result) == 3
+        assert result[0]["signal_timestamp"] == "2026-05-10T10:00:00Z"
+
+
+class TestLastSignalByTicker:
+    def test_latest_record_wins(self):
+        records = [
+            _sig("AAPL", signal_type="NO_SIGNAL", ts="2026-05-14T10:00:00Z"),
+            _sig("NVDA", ts="2026-05-15T10:00:00Z"),
+            _sig("AAPL", signal_type="SELL_PUT", ts="2026-05-16T10:00:00Z"),
+        ]
+        latest = last_signal_by_ticker(records)
+        assert latest["AAPL"]["signal_type"] == "SELL_PUT"
+        assert set(latest) == {"AAPL", "NVDA"}
+
+
+class TestTrackedTickers:
+    def test_union_of_states_and_records(self):
+        states = {"MSFT": {"phase": "A"}}
+        records = [_sig("AAPL")]
+        assert tracked_tickers(states, records) == ["AAPL", "MSFT"]
+
+    def test_excludes_fixture_only(self):
+        states = {"WXYZ": {"phase": "A"}, "AAPL": {"phase": "A"}}
+        assert tracked_tickers(states, []) == ["AAPL"]

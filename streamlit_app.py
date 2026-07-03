@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Wheel Trader — Streamlit dashboard.
+Claude Trader — multi-strategy Streamlit dashboard.
 
 Run:
     streamlit run streamlit_app.py
 """
 from __future__ import annotations
 
-import json
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -22,11 +21,12 @@ load_dotenv()
 
 import src.strategies  # noqa: F401 — fire @register decorators
 from src.dashboard_data import (
+    filter_signals,
     get_all_ticker_states,
-    get_all_tracked_tickers,
     get_iv_series,
-    get_last_signal,
-    get_recent_signals,
+    last_signal_by_ticker,
+    load_all_signals,
+    tracked_tickers,
 )
 from src.router import load_router, resolve_strategy
 from src.state_store import get_strategy_state, get_ticker_state, set_ticker_state
@@ -52,6 +52,71 @@ STRATEGY_COLORS = {"wheel": "#58a6ff", "put_credit_spread": "#bc8cff", "rsi2": "
 
 FIXTURES_DIR = Path("fixtures")
 
+PLOTLY_CONFIG = {"displayModeBar": False}
+
+# Strategies that never touch an options chain (fixture needs OHLCV only)
+EQUITY_ONLY_STRATEGIES = {"rsi2"}
+
+# ---------------------------------------------------------------------------
+# Cached data layer — every reader is keyed on the source file's mtime, so a
+# rerun costs ~0 until the CLI/scheduler actually writes new data.
+# ---------------------------------------------------------------------------
+
+
+def _mtime(path: str | Path) -> float:
+    p = Path(path)
+    return p.stat().st_mtime if p.exists() else 0.0
+
+
+@st.cache_data(show_spinner=False)
+def _signals_cached(mtime: float) -> list[dict]:
+    return load_all_signals(SIGNALS_PATH)
+
+
+@st.cache_data(show_spinner=False)
+def _states_cached(mtime: float) -> dict[str, dict]:
+    return get_all_ticker_states(STATE_PATH)
+
+
+@st.cache_data(show_spinner=False)
+def _iv_cached(ticker: str, mtime: float) -> list[dict]:
+    return get_iv_series(ticker, IV_DIR)
+
+
+@st.cache_data(show_spinner=False)
+def _router_cached(mtime: float) -> dict:
+    try:
+        return load_router(ROUTER_PATH)
+    except FileNotFoundError:
+        return {}
+
+
+def signals_data() -> list[dict]:
+    return _signals_cached(_mtime(SIGNALS_PATH))
+
+
+def states_data() -> dict[str, dict]:
+    return _states_cached(_mtime(STATE_PATH))
+
+
+def iv_data(ticker: str) -> list[dict]:
+    return _iv_cached(ticker, _mtime(Path(IV_DIR) / f"{ticker.upper()}.jsonl"))
+
+
+def _router_cfg() -> dict:
+    return _router_cached(_mtime(ROUTER_PATH))
+
+
+@st.cache_resource(show_spinner=False)
+def _get_adapter(name: str):
+    """Adapters are stateless clients — build once per server process."""
+    if name == "fixture":
+        from src.adapters.fixture_adapter import FixtureAdapter
+        return FixtureAdapter()
+    from src.adapters.alpaca_adapter import AlpacaPaperAdapter
+    return AlpacaPaperAdapter()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -67,14 +132,6 @@ def _fixture_tickers(require_options: bool = True) -> list[str]:
         return sorted(ohlcv)
     options = {p.stem.replace("_options", "") for p in FIXTURES_DIR.glob("*_options.json")}
     return sorted(ohlcv & options)
-
-
-def _router_cfg() -> dict:
-    """Load config/strategies.toml; empty dict when it doesn't exist."""
-    try:
-        return load_router(ROUTER_PATH)
-    except FileNotFoundError:
-        return {}
 
 
 def _ticker_strategy(ticker: str, router_cfg: dict | None = None) -> str:
@@ -93,6 +150,7 @@ def _alpaca_available() -> bool:
     import os
     return bool(os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_SECRET_KEY"))
 
+
 def _badge(text: str, color: str) -> str:
     return (
         f'<span style="background:rgba({_hex_to_rgb(color)},.15);color:{color};'
@@ -100,33 +158,47 @@ def _badge(text: str, color: str) -> str:
         f'{text}</span>'
     )
 
+
 def _hex_to_rgb(h: str) -> str:
     h = h.lstrip("#")
     return ",".join(str(int(h[i:i+2], 16)) for i in (0, 2, 4))
 
-def _load_config() -> dict:
-    with open(CONFIG_PATH, "rb") as f:
+
+def _load_toml(path: str | Path) -> dict:
+    with open(path, "rb") as f:
         return tomllib.load(f)
 
-def _save_config(cfg: dict) -> None:
-    with open(CONFIG_PATH, "wb") as f:
+
+def _save_toml(path: str | Path, cfg: dict) -> None:
+    with open(path, "wb") as f:
         tomli_w.dump(cfg, f)
+
+
+def _strategy_badge(strat: str) -> str:
+    return _badge(strat.replace("_", " "), STRATEGY_COLORS.get(strat, "#8b949e"))
+
 
 # ---------------------------------------------------------------------------
 # Page: Dashboard
 # ---------------------------------------------------------------------------
 
-def page_dashboard() -> None:
-    st.title("Dashboard")
 
-    tickers = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
-    if not tickers:
-        st.info("No tickers tracked yet. Use **Configuration → Tickers** to add one.")
-        return
+def _dashboard_grid(strat_filter: str) -> None:
+    states     = states_data()
+    records    = signals_data()
+    tickers    = tracked_tickers(states, records)
+    last_sigs  = last_signal_by_ticker(records)
+    router_cfg = _router_cfg()
 
-    states      = get_all_ticker_states(STATE_PATH)
-    last_sigs   = {t: get_last_signal(t, SIGNALS_PATH) for t in tickers}
-    router_cfg  = _router_cfg()
+    if strat_filter != "All":
+        tickers = [
+            t for t in tickers
+            if ((last_sigs.get(t) or {}).get("strategy_name")
+                or _ticker_strategy(t, router_cfg)) == strat_filter
+        ]
+        if not tickers:
+            st.info(f"No tickers currently on **{strat_filter}**.")
+            return
 
     cols = st.columns(3)
     for i, ticker in enumerate(tickers):
@@ -136,7 +208,6 @@ def page_dashboard() -> None:
         strat = (sig or {}).get("strategy_name") or _ticker_strategy(ticker, router_cfg)
 
         with cols[i % 3]:
-            strat_badge  = _badge(strat.replace("_", " "), STRATEGY_COLORS.get(strat, "#8b949e"))
             phase_badge  = (
                 _badge(f"Phase {phase}", PHASE_COLORS.get(phase, "#8b949e"))
                 if strat == "wheel" else ""
@@ -146,7 +217,7 @@ def page_dashboard() -> None:
             signal_badge = _badge(sig_phase.replace("_", " "), sig_color) if sig else ""
 
             st.markdown(
-                f"### {ticker} &nbsp; {strat_badge} &nbsp; {phase_badge} &nbsp; {signal_badge}",
+                f"### {ticker} &nbsp; {_strategy_badge(strat)} &nbsp; {phase_badge} &nbsp; {signal_badge}",
                 unsafe_allow_html=True,
             )
 
@@ -182,18 +253,64 @@ def page_dashboard() -> None:
                 st.caption(f"Cost basis ${state['cost_basis']:.2f}  ·  {state.get('assignment_date','')}")
 
             if st.button("View Details", key=f"detail_{ticker}", use_container_width=True):
-                st.session_state["_pending_nav"] = "Ticker Detail"
                 st.session_state["_detail_ticker"] = ticker
-                st.rerun()
+                st.switch_page(PAGE_TICKER_DETAIL)
             st.divider()
+
+
+def page_dashboard() -> None:
+    st.title("Dashboard")
+
+    tickers = tracked_tickers(states_data(), signals_data())
+    if not tickers:
+        st.info("No tickers tracked yet. Use **Configuration → Tickers** to add one.")
+        return
+
+    top_l, top_r = st.columns([3, 1])
+    strat_filter = top_l.segmented_control(
+        "Strategy filter",
+        ["All"] + sorted(list_strategies()),
+        default="All",
+        label_visibility="collapsed",
+    ) or "All"
+    auto_refresh = top_r.toggle("Auto-refresh 30s", value=False, help="Refresh the grid every 30s")
+
+    grid = st.fragment(_dashboard_grid, run_every=30 if auto_refresh else None)
+    grid(strat_filter)
 
 
 # ---------------------------------------------------------------------------
 # Page: Ticker Detail
 # ---------------------------------------------------------------------------
 
+
+@st.fragment
+def _phase_transition_fragment(ticker: str, phase: str) -> None:
+    st.subheader("Phase Transition")
+    if phase == "A":
+        with st.form("assign_form"):
+            cost = st.number_input("Cost basis (assignment price per share)", min_value=0.01, step=0.01)
+            if st.form_submit_button("Record Assignment  (A → B)", type="primary"):
+                set_ticker_state(STATE_PATH, ticker, {
+                    "phase": "B", "shares_held": 100,
+                    "cost_basis": round(cost, 4),
+                    "assignment_date": date.today().isoformat(),
+                    "open_put_strike": None, "open_put_expiry": None,
+                })
+                st.toast(f"{ticker} moved to Phase B @ ${cost:.2f}", icon="✅")
+                st.rerun(scope="app")  # stats row lives outside this fragment
+    else:
+        if st.button("Record Exit  (B → A)", type="secondary"):
+            set_ticker_state(STATE_PATH, ticker, {
+                "phase": "A", "shares_held": 0, "cost_basis": None,
+                "assignment_date": None, "open_put_strike": None, "open_put_expiry": None,
+            })
+            st.toast(f"{ticker} moved back to Phase A", icon="✅")
+            st.rerun(scope="app")
+
+
 def page_ticker_detail() -> None:
-    tickers = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
+    tickers = tracked_tickers(states_data(), signals_data())
     if not tickers:
         st.info("No tickers tracked yet.")
         return
@@ -203,15 +320,12 @@ def page_ticker_detail() -> None:
 
     ticker = st.selectbox("Ticker", tickers, index=default_idx)
     strat  = _ticker_strategy(ticker)
-    st.markdown(
-        f"# {ticker} &nbsp; {_badge(strat.replace('_', ' '), STRATEGY_COLORS.get(strat, '#8b949e'))}",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"# {ticker} &nbsp; {_strategy_badge(strat)}", unsafe_allow_html=True)
 
     state      = get_ticker_state(STATE_PATH, ticker)
-    signals    = get_recent_signals(SIGNALS_PATH, ticker=ticker, n=50)
+    signals    = filter_signals(signals_data(), ticker=ticker, n=50)
     last_sig   = signals[0] if signals else None
-    iv_series  = get_iv_series(ticker, IV_DIR)
+    iv_series  = iv_data(ticker)
 
     # --- Stats row ---
     phase = state.get("phase", "A")
@@ -260,7 +374,7 @@ def page_ticker_detail() -> None:
             yaxis=dict(gridcolor="#21262d", color="#8b949e",
                        tickformat=".0%"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
     else:
         st.info("No IV history yet — run a signal scan first.")
 
@@ -277,57 +391,44 @@ def page_ticker_detail() -> None:
                 "Time":       s.get("signal_timestamp", "")[:16].replace("T", " "),
                 "Strategy":   s.get("strategy_name", "—"),
                 "Signal":     s.get("signal_type", ""),
-                "Strike":     f"${_leg0['strike']:.2f}" if _leg0.get("strike") else "—",
-                "Expiry":     _leg0.get("expiry", "—"),
-                "Delta":      f"{_leg0['delta_estimate']:+.3f}" if _leg0.get("delta_estimate") is not None else "—",
-                "IV Rank":    f"{_payload['iv_rank']:.1f}%" if _payload.get("iv_rank") is not None else "—",
-                "Mid":        f"${_leg0['limit_price']:.2f}" if _leg0.get("limit_price") else "—",
-                "Confidence": s.get("confidence_tier", "—"),
+                "Strike":     _leg0.get("strike"),
+                "Expiry":     _leg0.get("expiry") or "—",
+                "Delta":      _leg0.get("delta_estimate"),
+                "IV Rank":    _payload.get("iv_rank"),
+                "Mid":        _leg0.get("limit_price"),
+                "Confidence": s.get("confidence_tier") or "—",
                 "Order":      (_order_ids[0][:8] if _order_ids else "") or "—",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+            height=min(38 + 35 * len(rows), 420),
+            column_config={
+                "Strike":  st.column_config.NumberColumn(format="$%.2f"),
+                "Mid":     st.column_config.NumberColumn(format="$%.2f"),
+                "Delta":   st.column_config.NumberColumn(format="%.3f"),
+                "IV Rank": st.column_config.ProgressColumn(
+                    format="%.1f%%", min_value=0, max_value=100),
+            },
+        )
     else:
         st.info(f"No signals recorded for {ticker}.")
 
     # --- Phase transition (Wheel-only concept) ---
     if strat != "wheel":
         return
-    st.subheader("Phase Transition")
-    if phase == "A":
-        with st.form("assign_form"):
-            cost = st.number_input("Cost basis (assignment price per share)", min_value=0.01, step=0.01)
-            if st.form_submit_button("Record Assignment  (A → B)", type="primary"):
-                set_ticker_state(STATE_PATH, ticker, {
-                    "phase": "B", "shares_held": 100,
-                    "cost_basis": round(cost, 4),
-                    "assignment_date": date.today().isoformat(),
-                    "open_put_strike": None, "open_put_expiry": None,
-                })
-                st.success(f"{ticker} moved to Phase B @ ${cost:.2f}")
-                st.rerun()
-    else:
-        if st.button("Record Exit  (B → A)", type="secondary"):
-            set_ticker_state(STATE_PATH, ticker, {
-                "phase": "A", "shares_held": 0, "cost_basis": None,
-                "assignment_date": None, "open_put_strike": None, "open_put_expiry": None,
-            })
-            st.success(f"{ticker} moved back to Phase A")
-            st.rerun()
+    _phase_transition_fragment(ticker, phase)
 
 
 # ---------------------------------------------------------------------------
 # Page: Run Signals
 # ---------------------------------------------------------------------------
 
-# Strategies that never touch an options chain (fixture needs OHLCV only)
-EQUITY_ONLY_STRATEGIES = {"rsi2"}
 
-
-def page_run_signals() -> None:
-    st.title("Run Signals")
-    st.caption("Scan tickers through each strategy's filter pipeline and optionally place paper orders.")
-
-    tracked    = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
+@st.fragment
+def _run_signals_body() -> None:
+    tracked    = tracked_tickers(states_data(), signals_data())
     router_cfg = _router_cfg()
 
     strategy_options = (["auto (router)"] if router_cfg else []) + sorted(list_strategies())
@@ -373,13 +474,8 @@ def page_run_signals() -> None:
         with st.spinner(f"Scanning {', '.join(tickers)} via {adapter}…"):
             try:
                 from src.signal_engine import run_signals_batch
-                from src.adapters.fixture_adapter import FixtureAdapter
-                if adapter == "fixture":
-                    data_adapter = FixtureAdapter()
-                else:
-                    from src.adapters.alpaca_adapter import AlpacaPaperAdapter
-                    data_adapter = AlpacaPaperAdapter()
 
+                data_adapter = _get_adapter(adapter)
                 executor = None
                 if execute:
                     from src.order_executor import AlpacaOrderExecutor
@@ -401,10 +497,7 @@ def page_run_signals() -> None:
                 for card in cards:
                     color = SIGNAL_COLORS.get(card.signal_type, "#8b949e")
                     tier_color = TIER_COLORS.get(card.confidence_tier or "", "#8b949e")
-                    strat_badge = _badge(
-                        card.strategy_name.replace("_", " "),
-                        STRATEGY_COLORS.get(card.strategy_name, "#8b949e"),
-                    )
+                    strat_badge = _strategy_badge(card.strategy_name)
                     if card.signal_type == "NO_SIGNAL":
                         st.markdown(strat_badge, unsafe_allow_html=True)
                         st.error(f"**{card.ticker}** — NO SIGNAL: {card.no_signal_reason}")
@@ -434,21 +527,138 @@ def page_run_signals() -> None:
                 st.error(f"Scan failed: {exc}")
 
 
+def page_run_signals() -> None:
+    st.title("Run Signals")
+    st.caption("Scan tickers through each strategy's filter pipeline and optionally place paper orders.")
+    _run_signals_body()
+
+
 # ---------------------------------------------------------------------------
-# Page: Configuration (Phase 7)
+# Page: Backtest
 # ---------------------------------------------------------------------------
+
+
+class _WindowAdapter:
+    """Serves a fixed OHLCV window as get_ohlcv — used for rolling backtests
+    of equity strategies whose emit_signal_card only needs price history."""
+
+    def __init__(self, df: pd.DataFrame):
+        self._df = df
+
+    def get_ohlcv(self, ticker: str, bars: int, timeframe: str = "1Day") -> pd.DataFrame:
+        return self._df.iloc[-bars:]
+
+
+def _backtest_rsi2(strategy, hist: pd.DataFrame, ticker: str) -> list:
+    """Walk-forward: emit real RSI2 cards on rolling windows, simulate on future bars."""
+    trades = []
+    warmup = 210  # 200-day SMA + slack
+    i = warmup
+    while i < len(hist) - 1:
+        window = hist.iloc[:i]
+        card = strategy.emit_signal_card(ticker, _WindowAdapter(window), {})
+        if card.signal_type == "BUY_EQUITY":
+            card.signal_timestamp = window.index[-1].to_pydatetime()
+            result = strategy.simulate_trade(card, hist.iloc[i:])
+            trades.append(result)
+            exit_ts = pd.Timestamp(result.exit_date, tz="UTC")
+            i = max(int(hist.index.searchsorted(exit_ts, side="right")), i + 1)
+        else:
+            i += 1
+    return trades
+
+
+def _backtest_pcs(hist: pd.DataFrame, ticker: str, dte_target: int = 35) -> list:
+    """Simplified PCS walk-forward: open a 5%/10%-OTM put spread whenever flat;
+    entry credit is Black-Scholes-priced from realized vol (see simulate_pcs_trade)."""
+    from src.strategies.spreads.backtester import simulate_pcs_trade
+
+    trades = []
+    warmup = 60
+    i = warmup
+    while i < len(hist) - 1:
+        window = hist.iloc[:i]
+        spot = float(window["close"].iloc[-1])
+        result = simulate_pcs_trade(
+            ticker=ticker,
+            short_strike=round(spot * 0.95, 0),
+            long_strike=round(spot * 0.90, 0),
+            entry_date=window.index[-1].date(),
+            dte_target=dte_target,
+            net_credit=0.0,  # <=0 → BS-priced at entry
+            entry_ohlcv=window.iloc[-30:],
+            future_ohlcv=hist.iloc[i:],
+        )
+        if result.metadata.get("outcome") == "OPEN":
+            break  # ran off the end of history
+        trades.append(result)
+        exit_ts = pd.Timestamp(result.exit_date, tz="UTC")
+        i = max(int(hist.index.searchsorted(exit_ts, side="right")) + 1, i + 1)
+    return trades
+
+
+def _render_trade_results(trades: list) -> None:
+    """Shared metrics + equity curve + trade table for TradeResult lists."""
+    if not trades:
+        st.info("No trades generated — try a wider date range or relaxed config.")
+        return
+
+    wins = [t for t in trades if t.pnl > 0]
+    total_pnl = sum(t.pnl for t in trades)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Trades",    len(trades))
+    m2.metric("Win rate",  f"{100 * len(wins) / len(trades):.1f}%")
+    m3.metric("Total P&L", f"${total_pnl:.2f}")
+    m4.metric("Avg P&L",   f"${total_pnl / len(trades):.2f}")
+
+    running, curve = 0.0, []
+    for t in trades:
+        running += t.pnl
+        curve.append({"date": t.exit_date, "pnl": round(running, 2)})
+    eq_df = pd.DataFrame(curve)
+    fig = go.Figure(go.Scatter(x=eq_df["date"], y=eq_df["pnl"],
+                               mode="lines+markers", name="Equity"))
+    fig.update_layout(title="Cumulative P&L", xaxis_title="Exit date",
+                      yaxis_title="P&L ($)", height=350)
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+
+    rows = [
+        {
+            "Entry":   t.entry_date,
+            "Exit":    t.exit_date,
+            "Signal":  t.signal_type,
+            "P&L":     t.pnl,
+            "Outcome": t.metadata.get("outcome", "—"),
+        }
+        for t in trades
+    ]
+    st.dataframe(
+        pd.DataFrame(rows), use_container_width=True, hide_index=True,
+        column_config={"P&L": st.column_config.NumberColumn(format="$%.2f")},
+    )
+
 
 def page_backtest() -> None:
     st.title("Backtest")
-    st.caption("Walk-forward backtest using 30-day realized vol + Black-Scholes pricing.")
 
-    cfg = _load_config()
-    wheel_cfg = cfg.get("wheel", cfg)
-    tracked   = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
-    fix_tickers = _fixture_tickers()
-    adapters  = (["alpaca"] if _alpaca_available() else []) + ["fixture"]
+    strategies = sorted(list_strategies())
+    col0, col1, col2 = st.columns(3)
+    bt_strategy = col0.selectbox("Strategy", strategies, key="bt_strategy",
+                                 index=strategies.index("wheel") if "wheel" in strategies else 0)
 
-    col1, col2 = st.columns(2)
+    if bt_strategy == "wheel":
+        st.caption("Walk-forward backtest using 30-day realized vol + Black-Scholes pricing.")
+    elif bt_strategy == "put_credit_spread":
+        st.caption("Simplified walk-forward: 5%/10%-OTM put spread whenever flat, "
+                   "BS-priced entry credit from realized vol.")
+    else:
+        st.caption("Walk-forward RSI(2): real entry signals on rolling 200-day windows, "
+                   "bar-by-bar exits (RSI recovery or max hold).")
+
+    tracked     = tracked_tickers(states_data(), signals_data())
+    fix_tickers = _fixture_tickers(require_options=False)
+    adapters    = (["alpaca"] if _alpaca_available() else []) + ["fixture"]
+
     adapter = col1.radio("Adapter", adapters, horizontal=True, key="bt_adapter")
     if adapter == "fixture":
         pool = fix_tickers or ["WXYZ"]
@@ -462,23 +672,23 @@ def page_backtest() -> None:
         col3, col4 = st.columns(2)
         start   = col3.date_input("Start date", value=date(2024, 1, 1))
         end     = col4.date_input("End date",   value=date(2024, 12, 31))
-        phase   = st.radio("Phase", ["A — Sell Put", "B — Sell Call"], horizontal=True)
+        phase   = None
+        if bt_strategy == "wheel":
+            phase = st.radio("Phase", ["A — Sell Put", "B — Sell Call"], horizontal=True)
         run     = st.form_submit_button("Run Backtest", type="primary")
 
-    if run:
-        phase_key = "A" if phase.startswith("A") else "B"
-        with st.spinner(f"Running backtest for {ticker} ({start} → {end})…"):
-            try:
-                from src.backtester import BacktestEngine
-                from src.adapters.fixture_adapter import FixtureAdapter
-                if adapter == "fixture":
-                    data_adapter = FixtureAdapter()
-                else:
-                    from src.adapters.alpaca_adapter import AlpacaPaperAdapter
-                    data_adapter = AlpacaPaperAdapter()
+    if not run:
+        return
 
+    with st.spinner(f"Running {bt_strategy} backtest for {ticker} ({start} → {end})…"):
+        try:
+            data_adapter = _get_adapter(adapter)
+
+            if bt_strategy == "wheel":
+                from src.backtester import BacktestEngine
+                wheel_cfg = _load_toml(CONFIG_PATH).get("wheel", {})
                 engine  = BacktestEngine(data_adapter, {"wheel": wheel_cfg})
-                summary = engine.run(ticker, start, end, phase=phase_key)
+                summary = engine.run(ticker, start, end, phase="A" if phase.startswith("A") else "B")
 
                 m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Total trades",    summary.total_trades)
@@ -490,8 +700,7 @@ def page_backtest() -> None:
                 if summary.trades:
                     closed = [t for t in summary.trades if t.outcome != "OPEN"]
                     if closed:
-                        cumulative = []
-                        running = 0.0
+                        cumulative, running = [], 0.0
                         for t in closed:
                             running += t.pnl
                             cumulative.append({"date": t.expiry_date, "pnl": round(running, 2)})
@@ -500,7 +709,7 @@ def page_backtest() -> None:
                                                    mode="lines+markers", name="Equity"))
                         fig.update_layout(title="Cumulative P&L", xaxis_title="Expiry",
                                           yaxis_title="P&L ($/share)", height=350)
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
                     rows = [
                         {
@@ -514,237 +723,416 @@ def page_backtest() -> None:
                         }
                         for t in summary.trades
                     ]
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                    st.dataframe(
+                        pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                        column_config={
+                            "Strike":  st.column_config.NumberColumn(format="$%.2f"),
+                            "Premium": st.column_config.NumberColumn(format="$%.2f"),
+                            "P&L":     st.column_config.NumberColumn(format="$%.2f"),
+                        },
+                    )
                 else:
                     st.info("No trades generated — try a wider date range or relaxed config.")
-            except Exception as exc:
-                st.error(f"Backtest failed: {exc}")
+
+            else:
+                hist = data_adapter.get_historical_ohlcv(ticker, start, end)
+                if hist.empty:
+                    st.info("No historical data for that range.")
+                    return
+                if bt_strategy == "rsi2":
+                    if len(hist) < 220:
+                        st.warning("RSI(2) needs ≥ 220 bars of history (200-day SMA warm-up) — "
+                                   "widen the date range.")
+                        return
+                    from src.router import build_strategy
+                    strategy = build_strategy("rsi2", _router_cfg())
+                    trades = _backtest_rsi2(strategy, hist, ticker)
+                else:  # put_credit_spread
+                    trades = _backtest_pcs(hist, ticker)
+                _render_trade_results(trades)
+
+        except Exception as exc:
+            st.error(f"Backtest failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Page: Configuration
+# ---------------------------------------------------------------------------
+
+
+@st.fragment
+def _config_router_tab() -> None:
+    st.subheader("Strategy Router")
+    router_cfg = _router_cfg()
+    if not router_cfg:
+        st.info("No config/strategies.toml found — all tickers run the Wheel strategy.")
+        return
+
+    st.caption("Which strategy each ticker runs. Saved to `config/strategies.toml`. "
+               "Note: saving rewrites the file and drops TOML comments.")
+    assignments = router_cfg.get("router", {}).get("assignments", {})
+    default_strat = router_cfg.get("router", {}).get("default_strategy", "wheel")
+    st.markdown(f"Default strategy (unassigned tickers): **{default_strat}**")
+
+    if assignments:
+        df_router = pd.DataFrame(
+            [{"Ticker": t, "Strategy": s} for t, s in sorted(assignments.items())]
+        )
+        st.dataframe(df_router, use_container_width=True, hide_index=True)
+
+    known_strategies = sorted(list_strategies())
+    col_assign, col_unassign = st.columns(2)
+    with col_assign:
+        st.markdown("**Assign / Reassign Ticker**")
+        with st.form("router_assign_form"):
+            r_ticker = st.text_input("Ticker").upper().strip()
+            r_strat  = st.selectbox("Strategy", known_strategies)
+            if st.form_submit_button("Save Assignment", type="primary"):
+                if not r_ticker:
+                    st.warning("Enter a ticker symbol.")
+                else:
+                    router_cfg.setdefault("router", {}).setdefault("assignments", {})[r_ticker] = r_strat
+                    _save_router_cfg(router_cfg)
+                    st.toast(f"{r_ticker} → {r_strat}", icon="✅")
+                    st.rerun(scope="fragment")
+    with col_unassign:
+        st.markdown("**Remove Assignment**")
+        with st.form("router_unassign_form"):
+            r_remove = st.selectbox("Ticker", sorted(assignments.keys()) or ["—"])
+            if st.form_submit_button("Remove", type="secondary"):
+                if r_remove and r_remove != "—":
+                    router_cfg.get("router", {}).get("assignments", {}).pop(r_remove, None)
+                    _save_router_cfg(router_cfg)
+                    st.toast(f"Removed {r_remove} (falls back to {default_strat})", icon="✅")
+                    st.rerun(scope="fragment")
+
+
+def _wheel_params_form() -> None:
+    cfg   = _load_toml(CONFIG_PATH)
+    wheel = cfg.get("wheel", {})
+    st.caption("Changes are saved to `config/wheel.toml` immediately.")
+
+    with st.form("strategy_form"):
+        c1, c2 = st.columns(2)
+        ema_period = c1.number_input(
+            "EMA Period", min_value=5, max_value=200,
+            value=int(wheel.get("ema_period", 50)), step=1,
+            help="Lookback period for the 50-day EMA trend filter",
+        )
+        bb_period = c2.number_input(
+            "Bollinger Band Period", min_value=5, max_value=100,
+            value=int(wheel.get("bb_period", 20)), step=1,
+        )
+        bb_std_dev = c1.number_input(
+            "Bollinger Band Std Dev", min_value=1.0, max_value=4.0,
+            value=float(wheel.get("bb_std_dev", 2.0)), step=0.1, format="%.1f",
+        )
+        volume_lookback = c2.number_input(
+            "Volume Lookback Bars", min_value=5, max_value=100,
+            value=int(wheel.get("volume_lookback_bars", 20)), step=1,
+        )
+
+        st.divider()
+        st.subheader("RSI Gate")
+        r1, r2 = st.columns(2)
+        rsi_min = r1.number_input("RSI Min", min_value=10, max_value=50,
+                                   value=int(wheel.get("rsi_min", 35)), step=1)
+        rsi_max = r2.number_input("RSI Max", min_value=50, max_value=90,
+                                   value=int(wheel.get("rsi_max", 65)), step=1)
+
+        st.subheader("Delta Target")
+        d1, d2 = st.columns(2)
+        delta_target    = d1.number_input("Delta Target",    min_value=0.10, max_value=0.50,
+                                           value=float(wheel.get("delta_target", 0.30)),
+                                           step=0.01, format="%.2f")
+        delta_tolerance = d2.number_input("Delta Tolerance", min_value=0.01, max_value=0.15,
+                                           value=float(wheel.get("delta_tolerance", 0.05)),
+                                           step=0.01, format="%.2f")
+
+        st.subheader("Days to Expiry Window")
+        e1, e2 = st.columns(2)
+        dte_min = e1.number_input("DTE Min", min_value=7,  max_value=60,
+                                   value=int(wheel.get("dte_min", 30)), step=1)
+        dte_max = e2.number_input("DTE Max", min_value=14, max_value=120,
+                                   value=int(wheel.get("dte_max", 45)), step=1)
+
+        if st.form_submit_button("Save Wheel Parameters", type="primary"):
+            cfg["wheel"] = {
+                "ema_period":                   ema_period,
+                "rsi_min":                      rsi_min,
+                "rsi_max":                      rsi_max,
+                "delta_target":                 delta_target,
+                "delta_tolerance":              delta_tolerance,
+                "dte_min":                      dte_min,
+                "dte_max":                      dte_max,
+                "bb_period":                    bb_period,
+                "bb_std_dev":                   bb_std_dev,
+                "volume_lookback_bars":         volume_lookback,
+                "soft_flag_confidence_penalty": wheel.get("soft_flag_confidence_penalty", "HIGH_TO_MEDIUM"),
+            }
+            _save_toml(CONFIG_PATH, cfg)
+            st.toast("Wheel parameters saved to config/wheel.toml", icon="✅")
+
+
+def _pcs_params_form() -> None:
+    path = "config/put_credit_spread.toml"
+    cfg  = _load_toml(path)
+    pcs  = cfg.get("put_credit_spread", {})
+    st.caption(f"Changes are saved to `{path}` immediately.")
+
+    with st.form("pcs_form"):
+        c1, c2 = st.columns(2)
+        ema_period = c1.number_input("EMA Period", min_value=5, max_value=200,
+                                     value=int(pcs.get("ema_period", 50)), step=1)
+        min_iv_rank = c2.number_input("Min IV Rank (hard stop)", min_value=0.0, max_value=100.0,
+                                      value=float(pcs.get("min_iv_rank", 25.0)), step=1.0, format="%.0f")
+
+        st.subheader("RSI Gate")
+        r1, r2 = st.columns(2)
+        rsi_min = r1.number_input("RSI Min", min_value=10.0, max_value=50.0,
+                                  value=float(pcs.get("rsi_min", 35.0)), step=1.0, format="%.0f")
+        rsi_max = r2.number_input("RSI Max", min_value=50.0, max_value=90.0,
+                                  value=float(pcs.get("rsi_max", 65.0)), step=1.0, format="%.0f")
+
+        st.subheader("Spread Legs")
+        d1, d2 = st.columns(2)
+        short_delta = d1.number_input("Short Delta Target", min_value=0.10, max_value=0.50,
+                                      value=float(pcs.get("short_delta_target", 0.30)),
+                                      step=0.01, format="%.2f")
+        short_tol   = d2.number_input("Short Delta Tolerance", min_value=0.01, max_value=0.15,
+                                      value=float(pcs.get("short_delta_tolerance", 0.05)),
+                                      step=0.01, format="%.2f")
+        long_delta  = d1.number_input("Long Delta Target", min_value=0.05, max_value=0.30,
+                                      value=float(pcs.get("long_delta_target", 0.15)),
+                                      step=0.01, format="%.2f")
+        long_tol    = d2.number_input("Long Delta Tolerance", min_value=0.01, max_value=0.15,
+                                      value=float(pcs.get("long_delta_tolerance", 0.07)),
+                                      step=0.01, format="%.2f")
+        min_credit  = d1.number_input("Min Net Credit ($/share)", min_value=0.05, max_value=5.0,
+                                      value=float(pcs.get("min_credit", 0.40)), step=0.05, format="%.2f")
+        max_width   = d2.number_input("Max Spread Width ($)", min_value=1.0, max_value=50.0,
+                                      value=float(pcs.get("max_spread_width", 15.0)), step=1.0, format="%.0f")
+
+        st.subheader("Days to Expiry Window")
+        e1, e2 = st.columns(2)
+        dte_min = e1.number_input("DTE Min", min_value=7, max_value=60,
+                                  value=int(pcs.get("dte_min", 30)), step=1)
+        dte_max = e2.number_input("DTE Max", min_value=14, max_value=120,
+                                  value=int(pcs.get("dte_max", 45)), step=1)
+
+        if st.form_submit_button("Save PCS Parameters", type="primary"):
+            cfg["put_credit_spread"] = {
+                "ema_period":            ema_period,
+                "rsi_min":               rsi_min,
+                "rsi_max":               rsi_max,
+                "dte_min":               dte_min,
+                "dte_max":               dte_max,
+                "short_delta_target":    short_delta,
+                "short_delta_tolerance": short_tol,
+                "long_delta_target":     long_delta,
+                "long_delta_tolerance":  long_tol,
+                "min_iv_rank":           min_iv_rank,
+                "min_credit":            min_credit,
+                "max_spread_width":      max_width,
+            }
+            _save_toml(path, cfg)
+            st.toast(f"PCS parameters saved to {path}", icon="✅")
+
+
+def _rsi2_params_form() -> None:
+    path = "config/rsi2.toml"
+    cfg  = _load_toml(path)
+    r2c  = cfg.get("rsi2", {})
+    st.caption(f"Changes are saved to `{path}` immediately.")
+
+    with st.form("rsi2_form"):
+        c1, c2 = st.columns(2)
+        entry_max = c1.number_input("Entry RSI(2) Max (oversold)", min_value=1.0, max_value=30.0,
+                                    value=float(r2c.get("entry_rsi_max", 10.0)), step=1.0, format="%.0f")
+        exit_min  = c2.number_input("Exit RSI(2) Min (recovered)", min_value=50.0, max_value=95.0,
+                                    value=float(r2c.get("exit_rsi_min", 70.0)), step=1.0, format="%.0f")
+        trend_ma  = c1.number_input("Trend Filter SMA", min_value=50, max_value=250,
+                                    value=int(r2c.get("trend_filter_ma", 200)), step=10)
+        max_hold  = c2.number_input("Max Hold Days", min_value=1, max_value=20,
+                                    value=int(r2c.get("max_hold_days", 5)), step=1)
+
+        st.subheader("Position Sizing")
+        s1, s2 = st.columns(2)
+        size_pct = s1.number_input("Position Size (% of equity)", min_value=1.0, max_value=25.0,
+                                   value=float(r2c.get("position_size_pct", 5.0)), step=0.5, format="%.1f")
+        equity   = s2.number_input("Paper Starting Equity ($)", min_value=1000.0, max_value=1_000_000.0,
+                                   value=float(r2c.get("paper_starting_equity", 25000.0)), step=1000.0, format="%.0f")
+
+        st.subheader("Frictions (backtest)")
+        f1, f2 = st.columns(2)
+        commission = f1.number_input("Commission per Share ($)", min_value=0.0, max_value=0.10,
+                                     value=float(r2c.get("commission_per_share", 0.0)), step=0.005, format="%.3f")
+        slippage   = f2.number_input("Slippage per Fill (%)", min_value=0.0, max_value=1.0,
+                                     value=float(r2c.get("slippage_pct", 0.05)), step=0.01, format="%.2f")
+
+        if st.form_submit_button("Save RSI2 Parameters", type="primary"):
+            cfg["rsi2"] = {
+                "rsi_period":            int(r2c.get("rsi_period", 2)),
+                "entry_rsi_max":         entry_max,
+                "exit_rsi_min":          exit_min,
+                "trend_filter_ma":       trend_ma,
+                "max_hold_days":         max_hold,
+                "position_size_pct":     size_pct,
+                "paper_starting_equity": equity,
+                "commission_per_share":  commission,
+                "slippage_pct":          slippage,
+            }
+            _save_toml(path, cfg)  # preserves [universe] since cfg was loaded whole
+            st.toast(f"RSI2 parameters saved to {path}", icon="✅")
+
+
+@st.fragment
+def _config_strategy_tab() -> None:
+    st.subheader("Strategy Parameters")
+    which = st.selectbox("Strategy", sorted(list_strategies()), key="cfg_strategy")
+    if which == "wheel":
+        _wheel_params_form()
+    elif which == "put_credit_spread":
+        _pcs_params_form()
+    elif which == "rsi2":
+        _rsi2_params_form()
+    else:
+        st.info(f"No editor for '{which}' yet — edit its TOML in config/ directly.")
+
+
+@st.fragment
+def _config_scheduler_tab() -> None:
+    st.subheader("Daily Scheduler")
+    st.caption("Controls the `python scheduler.py` cron job.")
+
+    cfg   = _load_toml(CONFIG_PATH)
+    sched = cfg.get("scheduler", {})
+
+    with st.form("scheduler_form"):
+        all_tracked = tracked_tickers(states_data(), signals_data())
+        current_tickers = sched.get("tickers", [])
+
+        # Allow free-text entry for new tickers not yet in state
+        sched_tickers = st.multiselect(
+            "Tickers to scan daily",
+            options=sorted(set(all_tracked) | set(current_tickers)),
+            default=current_tickers,
+        )
+        adapter = st.radio("Adapter", ["alpaca", "fixture"],
+                           index=0 if sched.get("adapter", "alpaca") == "alpaca" else 1,
+                           horizontal=True)
+
+        s1, s2 = st.columns(2)
+        run_hour   = s1.number_input("Run Hour (24h ET)",   min_value=0, max_value=23,
+                                      value=int(sched.get("run_hour", 9)))
+        run_minute = s2.number_input("Run Minute",          min_value=0, max_value=59,
+                                      value=int(sched.get("run_minute", 35)))
+        timezone   = st.text_input("Timezone", value=sched.get("timezone", "America/New_York"))
+
+        if st.form_submit_button("Save Scheduler Settings", type="primary"):
+            cfg["scheduler"] = {
+                "tickers":    sched_tickers,
+                "adapter":    adapter,
+                "run_hour":   run_hour,
+                "run_minute": run_minute,
+                "timezone":   timezone,
+            }
+            _save_toml(CONFIG_PATH, cfg)
+            st.toast("Scheduler settings saved.", icon="✅")
+
+
+@st.fragment
+def _config_tickers_tab() -> None:
+    st.subheader("Tracked Tickers")
+    states = states_data()
+
+    if states:
+        rows = []
+        for t, s in sorted(states.items()):
+            rows.append({
+                "Ticker":          t,
+                "Phase":           s.get("phase", "A"),
+                "Shares":          s.get("shares_held", 0),
+                "Cost Basis":      s.get("cost_basis"),
+                "Assignment Date": s.get("assignment_date") or "—",
+            })
+        st.dataframe(
+            pd.DataFrame(rows), use_container_width=True, hide_index=True,
+            column_config={
+                "Cost Basis": st.column_config.NumberColumn(format="$%.2f"),
+            },
+        )
+    else:
+        st.info("No tickers in state file yet.")
+
+    st.divider()
+
+    col_add, col_remove = st.columns(2)
+
+    with col_add:
+        st.markdown("**Add Ticker**")
+        with st.form("add_ticker_form"):
+            new_ticker = st.text_input("Symbol (e.g. TSLA)").upper().strip()
+            new_phase  = st.radio("Starting Phase", ["A", "B"], horizontal=True)
+            cost_basis = None
+            if new_phase == "B":
+                cost_basis = st.number_input("Cost Basis", min_value=0.01, step=0.01)
+            if st.form_submit_button("Add Ticker", type="primary"):
+                if not new_ticker:
+                    st.warning("Enter a ticker symbol.")
+                elif new_ticker in states:
+                    st.warning(f"{new_ticker} is already tracked.")
+                else:
+                    entry = {
+                        "phase": new_phase, "shares_held": 100 if new_phase == "B" else 0,
+                        "cost_basis": round(cost_basis, 4) if cost_basis else None,
+                        "assignment_date": date.today().isoformat() if new_phase == "B" else None,
+                        "open_put_strike": None, "open_put_expiry": None,
+                    }
+                    set_ticker_state(STATE_PATH, new_ticker, entry)
+                    st.toast(f"Added {new_ticker} (Phase {new_phase})", icon="✅")
+                    st.rerun(scope="fragment")
+
+    with col_remove:
+        st.markdown("**Remove Ticker**")
+        with st.form("remove_ticker_form"):
+            ticker_to_remove = st.selectbox("Ticker", options=sorted(states.keys()) or ["—"])
+            if st.form_submit_button("Remove Ticker", type="secondary"):
+                if ticker_to_remove and ticker_to_remove != "—":
+                    all_states = get_all_ticker_states(STATE_PATH)
+                    all_states.pop(ticker_to_remove, None)
+                    from src.state_store import write_state
+                    write_state(STATE_PATH, all_states)
+                    st.toast(f"Removed {ticker_to_remove}", icon="✅")
+                    st.rerun(scope="fragment")
 
 
 def page_configuration() -> None:
     st.title("Configuration")
 
-    cfg   = _load_config()
-    wheel = cfg.get("wheel", {})
-    sched = cfg.get("scheduler", {})
-
     tab_strategy, tab_router, tab_scheduler, tab_tickers = st.tabs([
         "Strategy Parameters", "Router", "Scheduler", "Tracked Tickers"
     ])
-
-    # ---- Router (ticker → strategy assignments) ----
-    with tab_router:
-        st.subheader("Strategy Router")
-        router_cfg = _router_cfg()
-        if not router_cfg:
-            st.info("No config/strategies.toml found — all tickers run the Wheel strategy.")
-        else:
-            st.caption("Which strategy each ticker runs. Saved to `config/strategies.toml`. "
-                       "Note: saving rewrites the file and drops TOML comments.")
-            assignments = router_cfg.get("router", {}).get("assignments", {})
-            default_strat = router_cfg.get("router", {}).get("default_strategy", "wheel")
-            st.markdown(f"Default strategy (unassigned tickers): **{default_strat}**")
-
-            if assignments:
-                df_router = pd.DataFrame(
-                    [{"Ticker": t, "Strategy": s} for t, s in sorted(assignments.items())]
-                )
-                st.dataframe(df_router, use_container_width=True, hide_index=True)
-
-            known_strategies = sorted(list_strategies())
-            col_assign, col_unassign = st.columns(2)
-            with col_assign:
-                st.markdown("**Assign / Reassign Ticker**")
-                with st.form("router_assign_form"):
-                    r_ticker = st.text_input("Ticker").upper().strip()
-                    r_strat  = st.selectbox("Strategy", known_strategies)
-                    if st.form_submit_button("Save Assignment", type="primary"):
-                        if not r_ticker:
-                            st.warning("Enter a ticker symbol.")
-                        else:
-                            router_cfg.setdefault("router", {}).setdefault("assignments", {})[r_ticker] = r_strat
-                            _save_router_cfg(router_cfg)
-                            st.success(f"{r_ticker} → {r_strat}")
-                            st.rerun()
-            with col_unassign:
-                st.markdown("**Remove Assignment**")
-                with st.form("router_unassign_form"):
-                    r_remove = st.selectbox("Ticker", sorted(assignments.keys()) or ["—"])
-                    if st.form_submit_button("Remove", type="secondary"):
-                        if r_remove and r_remove != "—":
-                            router_cfg.get("router", {}).get("assignments", {}).pop(r_remove, None)
-                            _save_router_cfg(router_cfg)
-                            st.success(f"Removed {r_remove} (falls back to {default_strat})")
-                            st.rerun()
-
-    # ---- Strategy Parameters ----
     with tab_strategy:
-        st.subheader("Filter Parameters")
-        st.caption("Changes are saved to `config/wheel.toml` immediately.")
-
-        with st.form("strategy_form"):
-            c1, c2 = st.columns(2)
-
-            ema_period = c1.number_input(
-                "EMA Period", min_value=5, max_value=200,
-                value=int(wheel.get("ema_period", 50)), step=1,
-                help="Lookback period for the 50-day EMA trend filter",
-            )
-            bb_period = c2.number_input(
-                "Bollinger Band Period", min_value=5, max_value=100,
-                value=int(wheel.get("bb_period", 20)), step=1,
-            )
-            bb_std_dev = c1.number_input(
-                "Bollinger Band Std Dev", min_value=1.0, max_value=4.0,
-                value=float(wheel.get("bb_std_dev", 2.0)), step=0.1, format="%.1f",
-            )
-            volume_lookback = c2.number_input(
-                "Volume Lookback Bars", min_value=5, max_value=100,
-                value=int(wheel.get("volume_lookback_bars", 20)), step=1,
-            )
-
-            st.divider()
-            st.subheader("RSI Gate")
-            r1, r2 = st.columns(2)
-            rsi_min = r1.number_input("RSI Min", min_value=10, max_value=50,
-                                       value=int(wheel.get("rsi_min", 35)), step=1)
-            rsi_max = r2.number_input("RSI Max", min_value=50, max_value=90,
-                                       value=int(wheel.get("rsi_max", 65)), step=1)
-
-            st.subheader("Delta Target")
-            d1, d2 = st.columns(2)
-            delta_target    = d1.number_input("Delta Target",    min_value=0.10, max_value=0.50,
-                                               value=float(wheel.get("delta_target", 0.30)),
-                                               step=0.01, format="%.2f")
-            delta_tolerance = d2.number_input("Delta Tolerance", min_value=0.01, max_value=0.15,
-                                               value=float(wheel.get("delta_tolerance", 0.05)),
-                                               step=0.01, format="%.2f")
-
-            st.subheader("Days to Expiry Window")
-            e1, e2 = st.columns(2)
-            dte_min = e1.number_input("DTE Min", min_value=7,  max_value=60,
-                                       value=int(wheel.get("dte_min", 30)), step=1)
-            dte_max = e2.number_input("DTE Max", min_value=14, max_value=120,
-                                       value=int(wheel.get("dte_max", 45)), step=1)
-
-            if st.form_submit_button("Save Strategy Parameters", type="primary"):
-                cfg["wheel"] = {
-                    "ema_period":                   ema_period,
-                    "rsi_min":                      rsi_min,
-                    "rsi_max":                      rsi_max,
-                    "delta_target":                 delta_target,
-                    "delta_tolerance":              delta_tolerance,
-                    "dte_min":                      dte_min,
-                    "dte_max":                      dte_max,
-                    "bb_period":                    bb_period,
-                    "bb_std_dev":                   bb_std_dev,
-                    "volume_lookback_bars":         volume_lookback,
-                    "soft_flag_confidence_penalty": wheel.get("soft_flag_confidence_penalty", "HIGH_TO_MEDIUM"),
-                }
-                _save_config(cfg)
-                st.success("Strategy parameters saved to config/wheel.toml")
-
-    # ---- Scheduler ----
+        _config_strategy_tab()
+    with tab_router:
+        _config_router_tab()
     with tab_scheduler:
-        st.subheader("Daily Scheduler")
-        st.caption("Controls the `python scheduler.py` cron job.")
-
-        with st.form("scheduler_form"):
-            all_tracked = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
-            current_tickers = sched.get("tickers", [])
-
-            # Allow free-text entry for new tickers not yet in state
-            sched_tickers = st.multiselect(
-                "Tickers to scan daily",
-                options=sorted(set(all_tracked) | set(current_tickers)),
-                default=current_tickers,
-            )
-            adapter = st.radio("Adapter", ["alpaca", "fixture"],
-                               index=0 if sched.get("adapter", "alpaca") == "alpaca" else 1,
-                               horizontal=True)
-
-            s1, s2 = st.columns(2)
-            run_hour   = s1.number_input("Run Hour (24h ET)",   min_value=0, max_value=23,
-                                          value=int(sched.get("run_hour", 9)))
-            run_minute = s2.number_input("Run Minute",          min_value=0, max_value=59,
-                                          value=int(sched.get("run_minute", 35)))
-            timezone   = st.text_input("Timezone", value=sched.get("timezone", "America/New_York"))
-
-            if st.form_submit_button("Save Scheduler Settings", type="primary"):
-                cfg["scheduler"] = {
-                    "tickers":    sched_tickers,
-                    "adapter":    adapter,
-                    "run_hour":   run_hour,
-                    "run_minute": run_minute,
-                    "timezone":   timezone,
-                }
-                _save_config(cfg)
-                st.success("Scheduler settings saved.")
-
-    # ---- Tickers ----
+        _config_scheduler_tab()
     with tab_tickers:
-        st.subheader("Tracked Tickers")
-        states = get_all_ticker_states(STATE_PATH)
-
-        if states:
-            rows = []
-            for t, s in sorted(states.items()):
-                rows.append({
-                    "Ticker":          t,
-                    "Phase":           s.get("phase", "A"),
-                    "Shares":          s.get("shares_held", 0),
-                    "Cost Basis":      f"${s['cost_basis']:.2f}" if s.get("cost_basis") else "—",
-                    "Assignment Date": s.get("assignment_date") or "—",
-                })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        else:
-            st.info("No tickers in state file yet.")
-
-        st.divider()
-
-        col_add, col_remove = st.columns(2)
-
-        with col_add:
-            st.markdown("**Add Ticker**")
-            with st.form("add_ticker_form"):
-                new_ticker = st.text_input("Symbol (e.g. TSLA)").upper().strip()
-                new_phase  = st.radio("Starting Phase", ["A", "B"], horizontal=True)
-                cost_basis = None
-                if new_phase == "B":
-                    cost_basis = st.number_input("Cost Basis", min_value=0.01, step=0.01)
-                if st.form_submit_button("Add Ticker", type="primary"):
-                    if not new_ticker:
-                        st.warning("Enter a ticker symbol.")
-                    elif new_ticker in states:
-                        st.warning(f"{new_ticker} is already tracked.")
-                    else:
-                        entry = {
-                            "phase": new_phase, "shares_held": 100 if new_phase == "B" else 0,
-                            "cost_basis": round(cost_basis, 4) if cost_basis else None,
-                            "assignment_date": date.today().isoformat() if new_phase == "B" else None,
-                            "open_put_strike": None, "open_put_expiry": None,
-                        }
-                        set_ticker_state(STATE_PATH, new_ticker, entry)
-                        st.success(f"Added {new_ticker} (Phase {new_phase})")
-                        st.rerun()
-
-        with col_remove:
-            st.markdown("**Remove Ticker**")
-            with st.form("remove_ticker_form"):
-                ticker_to_remove = st.selectbox("Ticker", options=sorted(states.keys()) or ["—"])
-                if st.form_submit_button("Remove Ticker", type="secondary"):
-                    if ticker_to_remove and ticker_to_remove != "—":
-                        all_states = get_all_ticker_states(STATE_PATH)
-                        all_states.pop(ticker_to_remove, None)
-                        from src.state_store import write_state
-                        write_state(STATE_PATH, all_states)
-                        st.success(f"Removed {ticker_to_remove}")
-                        st.rerun()
+        _config_tickers_tab()
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Main — st.navigation multipage (no radio/_pending_nav rerun hack)
 # ---------------------------------------------------------------------------
+
+PAGE_DASHBOARD     = st.Page(page_dashboard,     title="Dashboard",     icon="📊", url_path="dashboard", default=True)
+PAGE_TICKER_DETAIL = st.Page(page_ticker_detail, title="Ticker Detail", icon="🔍", url_path="ticker_detail")
+PAGE_RUN_SIGNALS   = st.Page(page_run_signals,   title="Run Signals",   icon="⚡", url_path="run_signals")
+PAGE_BACKTEST      = st.Page(page_backtest,      title="Backtest",      icon="📈", url_path="backtest")
+PAGE_CONFIGURATION = st.Page(page_configuration, title="Configuration", icon="⚙️", url_path="configuration")
+
 
 def main() -> None:
     st.set_page_config(
@@ -756,33 +1144,15 @@ def main() -> None:
 
     st.sidebar.title("Claude Trader")
     st.sidebar.caption("Multi-strategy signal system")
-    st.sidebar.divider()
 
-    pages = ["Dashboard", "Ticker Detail", "Run Signals", "Backtest", "Configuration"]
-
-    # Programmatic navigation — must be applied BEFORE the radio widget is instantiated
-    if "_pending_nav" in st.session_state:
-        st.session_state["_nav"] = st.session_state.pop("_pending_nav")
-
-    page = st.sidebar.radio(
-        "Navigate",
-        pages,
-        key="_nav",
-        label_visibility="collapsed",
-    )
-
-    st.sidebar.divider()
-
-    if page == "Dashboard":
-        page_dashboard()
-    elif page == "Ticker Detail":
-        page_ticker_detail()
-    elif page == "Run Signals":
-        page_run_signals()
-    elif page == "Backtest":
-        page_backtest()
-    elif page == "Configuration":
-        page_configuration()
+    nav = st.navigation([
+        PAGE_DASHBOARD,
+        PAGE_TICKER_DETAIL,
+        PAGE_RUN_SIGNALS,
+        PAGE_BACKTEST,
+        PAGE_CONFIGURATION,
+    ])
+    nav.run()
 
 
 if __name__ == "__main__":
