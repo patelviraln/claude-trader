@@ -62,21 +62,19 @@ def run_job(config_path: Path) -> None:
         _run_job_legacy_wheel(config_path)
 
 
-def _run_exits(router_cfg: dict, adapter_name: str) -> None:
+def _run_exits(router_cfg: dict, executor) -> list:
     """Phase 9: evaluate exit rules on open positions before scanning for entries."""
-    if adapter_name != "alpaca":
-        return  # fixture runs have no live account to manage
     rules = {**{"enabled": True}, **router_cfg.get("exit_rules", {})}
     if not rules.get("enabled", True):
-        return
+        return []
     try:
         from src.exit_engine import DEFAULT_RULES, run_exits
-        from src.order_executor import AlpacaOrderExecutor
-        executor = AlpacaOrderExecutor()
         decisions = run_exits(executor, rules={**DEFAULT_RULES, **rules}, router_cfg=router_cfg)
         log.info("scheduler.exits_done", closed=[f"{d.symbol}:{d.reason}" for d in decisions])
+        return decisions
     except Exception as exc:
         log.error("scheduler.exits_error", error=str(exc))
+        return []
 
 
 def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
@@ -93,7 +91,26 @@ def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
 
     log.info("scheduler.run_start", groups=groups, adapter=adapter_name)
 
-    _run_exits(router_cfg, adapter_name)
+    # --- Account-state pass (alpaca only): reconcile state, then run exits ---
+    executor = None
+    exit_decisions: list = []
+    reconcile_changes: list[dict] = []
+    errors: list[str] = []
+    if adapter_name == "alpaca":
+        try:
+            from src.order_executor import AlpacaOrderExecutor
+            executor = AlpacaOrderExecutor()
+        except Exception as exc:
+            errors.append(f"executor: {exc}")
+            log.error("scheduler.executor_error", error=str(exc))
+        if executor is not None:
+            try:
+                from src.reconcile import run_reconciliation
+                reconcile_changes = run_reconciliation(executor, router_cfg)
+            except Exception as exc:
+                errors.append(f"reconcile: {exc}")
+                log.error("scheduler.reconcile_error", error=str(exc))
+            exit_decisions = _run_exits(router_cfg, executor)
 
     try:
         adapter = build_adapter(adapter_name)
@@ -102,6 +119,7 @@ def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
         return
 
     results = {"ok": [], "error": []}
+    signal_types: dict[str, str] = {}
     for strategy_name, tickers in groups.items():
         for ticker in tickers:
             try:
@@ -113,11 +131,31 @@ def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
                     router_config_path=config_path,
                 )
                 results["ok"].append(ticker)
+                signal_types[ticker] = cards[0].signal_type if cards else "?"
                 log.info("scheduler.ticker_done", ticker=ticker, strategy=strategy_name,
-                         signal_type=cards[0].signal_type if cards else "?")
+                         signal_type=signal_types[ticker])
             except Exception as exc:
                 results["error"].append(ticker)
+                errors.append(f"{ticker}: {exc}")
                 log.error("scheduler.ticker_error", ticker=ticker, strategy=strategy_name, error=str(exc))
+
+    # --- Fill ledger + daily summary ---
+    realized = None
+    if executor is not None:
+        try:
+            from src.pnl_ledger import realized_pnl_summary
+            realized = realized_pnl_summary(executor, router_cfg)
+        except Exception as exc:
+            errors.append(f"pnl_ledger: {exc}")
+            log.error("scheduler.pnl_ledger_error", error=str(exc))
+
+    try:
+        from src.notifier import build_run_summary, send_summary
+        body = build_run_summary(exit_decisions, signal_types, reconcile_changes,
+                                 realized=realized, errors=errors)
+        send_summary("Claude Trader — daily run", body)
+    except Exception as exc:
+        log.error("scheduler.notify_error", error=str(exc))
 
     log.info("scheduler.run_complete", ok=results["ok"], errors=results["error"])
 
