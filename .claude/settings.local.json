@@ -32,7 +32,9 @@
       "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\patel\\\\claude-trader\\\\.env\"\\)[0..5]; \\($bytes | ForEach-Object { $_.ToString\\(\"X2\"\\) }\\) -join \" \")",
       "PowerShell(python -c \"p=r'C:\\\\Users\\\\patel\\\\claude-trader\\\\.env'; s=open\\(p, encoding='utf-8-sig'\\).read\\(\\); open\\(p, 'w', encoding='utf-8', newline='\\\\n'\\).write\\(s\\)\"; $b = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\patel\\\\claude-trader\\\\.env\"\\)[0..2]; \\($b | ForEach-Object { $_.ToString\\(\"X2\"\\) }\\) -join \" \")",
       "PowerShell(python -c \"from dotenv import dotenv_values; v = dotenv_values\\(r'C:\\\\Users\\\\patel\\\\claude-trader\\\\.env'\\); [print\\(k, 'len=', len\\(\\(v.get\\(k\\) or ''\\).strip\\(\\)\\)\\) for k in \\('ALPACA_API_KEY','ALPACA_SECRET_KEY','OPENROUTER_API_KEY'\\)]\")",
-      "PowerShell(python -c \"from dotenv import load_dotenv; load_dotenv\\(\\); from src.adapters.alpaca_adapter import AlpacaPaperAdapter; a = AlpacaPaperAdapter\\(\\); df = a.get_ohlcv\\('AAPL', bars=5\\); print\\('OK — got', len\\(df\\), 'bars, last close', float\\(df['close'].iloc[-1]\\)\\)\")"
+      "PowerShell(python -c \"from dotenv import load_dotenv; load_dotenv\\(\\); from src.adapters.alpaca_adapter import AlpacaPaperAdapter; a = AlpacaPaperAdapter\\(\\); df = a.get_ohlcv\\('AAPL', bars=5\\); print\\('OK — got', len\\(df\\), 'bars, last close', float\\(df['close'].iloc[-1]\\)\\)\")",
+      "Bash(git push *)",
+      "Bash(git fetch *)"
     ]
   }
 }
