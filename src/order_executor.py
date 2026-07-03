@@ -109,6 +109,51 @@ class AlpacaOrderExecutor:
         )
 
     # ------------------------------------------------------------------
+    # Account state — Phase 8 (positions & mark-to-market)
+    # ------------------------------------------------------------------
+
+    def get_positions(self) -> list[dict[str, Any]]:
+        """Return all open positions as plain dicts (see src.positions for parsing)."""
+        positions = self._client.get_all_positions()
+        out: list[dict[str, Any]] = []
+        for p in positions:
+            out.append({
+                "symbol": p.symbol,
+                "asset_class": str(getattr(p, "asset_class", "") or ""),
+                "qty": str(p.qty),
+                "side": str(p.side),
+                "avg_entry_price": str(p.avg_entry_price),
+                "current_price": str(p.current_price) if p.current_price is not None else None,
+                "market_value": str(p.market_value) if p.market_value is not None else None,
+                "unrealized_pl": str(p.unrealized_pl) if p.unrealized_pl is not None else None,
+                "unrealized_plpc": str(p.unrealized_plpc) if p.unrealized_plpc is not None else None,
+            })
+        return out
+
+    def close_position(self, symbol: str, qty: float | None = None) -> dict[str, Any]:
+        """Close an open position (market order on the opposite side).
+
+        For short options this submits a buy-to-close; for equity, a sell.
+        qty=None closes the entire position.
+        """
+        try:
+            if qty is not None:
+                from alpaca.trading.requests import ClosePositionRequest
+                order = self._client.close_position(
+                    symbol, ClosePositionRequest(qty=str(qty))
+                )
+            else:
+                order = self._client.close_position(symbol)
+        except Exception as exc:
+            raise RuntimeError(f"Close failed for {symbol}: {exc}") from exc
+
+        return {
+            "order_id": str(order.id),
+            "symbol": symbol,
+            "status": str(order.status),
+        }
+
+    # ------------------------------------------------------------------
     # Legacy shim — kept for backward compat with signal_engine
     # ------------------------------------------------------------------
 
