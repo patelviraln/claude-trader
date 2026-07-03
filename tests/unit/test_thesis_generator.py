@@ -1,13 +1,13 @@
-"""Unit tests for src/thesis_generator.py — mocks the Anthropic client."""
+"""Unit tests for src/thesis_generator.py — mocks the OpenRouter HTTP call."""
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.signal_output import Leg, SignalCard
+from src.thesis_generator import DEFAULT_FALLBACK_MODEL, DEFAULT_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -47,28 +47,16 @@ def _make_card(signal_type="SELL_PUT", iv_rank=65.0) -> SignalCard:
     )
 
 
-def _make_end_turn_response(text: str) -> MagicMock:
-    """Build a mock Anthropic response that ends on end_turn."""
-    block = MagicMock()
-    block.type = "text"
-    block.text = text
+def _make_response(text: str) -> MagicMock:
+    """Build a mock requests.Response with an OpenRouter-shaped body."""
     resp = MagicMock()
-    resp.stop_reason = "end_turn"
-    resp.content = [block]
+    resp.status_code = 200
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"choices": [{"message": {"content": text}}]}
     return resp
 
 
-def _make_tool_use_response(tool_id: str, tool_name: str, tool_input: dict) -> MagicMock:
-    """Build a mock Anthropic response that triggers a tool call."""
-    block = MagicMock()
-    block.type = "tool_use"
-    block.id = tool_id
-    block.name = tool_name
-    block.input = tool_input
-    resp = MagicMock()
-    resp.stop_reason = "tool_use"
-    resp.content = [block]
-    return resp
+ENV = {"OPENROUTER_API_KEY": "sk-or-test"}
 
 
 # ---------------------------------------------------------------------------
@@ -82,98 +70,130 @@ class TestGenerateThesis:
             result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
         assert result == ""
 
-    def test_returns_empty_string_when_anthropic_not_installed(self, tmp_path):
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
-            with patch("src.thesis_generator.anthropic", None):
-                from src.thesis_generator import generate_thesis
-                result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
-        assert result == ""
-
-    def test_returns_thesis_text_on_end_turn(self, tmp_path):
+    def test_returns_thesis_text(self, tmp_path):
         expected = "NVDA shows strong uptrend with elevated IV rank."
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
-            with patch("src.thesis_generator.anthropic") as mock_anthropic:
-                mock_client = MagicMock()
-                mock_anthropic.Anthropic.return_value = mock_client
-                mock_client.messages.create.return_value = _make_end_turn_response(expected)
-
-                from src.thesis_generator import generate_thesis
-                result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.requests.post", return_value=_make_response(expected)) as mock_post:
+            from src.thesis_generator import generate_thesis
+            result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
 
         assert result == expected
+        assert mock_post.call_count == 1
 
-    def test_calls_tool_and_continues(self, tmp_path):
+    def test_uses_default_model_when_env_unset(self, tmp_path):
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.requests.post", return_value=_make_response("thesis")) as mock_post:
+            from src.thesis_generator import generate_thesis
+            generate_thesis(_make_card(), iv_history_dir=tmp_path)
+
+        assert mock_post.call_args.kwargs["json"]["model"] == DEFAULT_MODEL
+
+    def test_uses_scanner_model_env_override(self, tmp_path):
+        env = dict(ENV, SCANNER_MODEL="anthropic/claude-sonnet-4.5")
+        with patch.dict("os.environ", env, clear=True), \
+             patch("src.thesis_generator.requests.post", return_value=_make_response("thesis")) as mock_post:
+            from src.thesis_generator import generate_thesis
+            generate_thesis(_make_card(), iv_history_dir=tmp_path)
+
+        assert mock_post.call_args.kwargs["json"]["model"] == "anthropic/claude-sonnet-4.5"
+
+    def test_falls_back_to_secondary_model_on_error(self, tmp_path):
+        expected = "Fallback thesis."
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.requests.post",
+                   side_effect=[RuntimeError("rate limited"), _make_response(expected)]) as mock_post:
+            from src.thesis_generator import generate_thesis
+            result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
+
+        assert result == expected
+        assert mock_post.call_count == 2
+        assert mock_post.call_args_list[0].kwargs["json"]["model"] == DEFAULT_MODEL
+        assert mock_post.call_args_list[1].kwargs["json"]["model"] == DEFAULT_FALLBACK_MODEL
+
+    def test_fallback_disabled_by_empty_string(self, tmp_path):
+        env = dict(ENV, SCANNER_FALLBACK_MODEL="")
+        with patch.dict("os.environ", env, clear=True), \
+             patch("src.thesis_generator.requests.post",
+                   side_effect=RuntimeError("down")) as mock_post:
+            from src.thesis_generator import generate_thesis
+            result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
+
+        assert result == ""
+        assert mock_post.call_count == 1  # no second attempt
+
+    def test_returns_empty_when_all_models_fail(self, tmp_path):
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.requests.post",
+                   side_effect=RuntimeError("down")) as mock_post:
+            from src.thesis_generator import generate_thesis
+            result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
+
+        assert result == ""
+        assert mock_post.call_count == 2  # primary + fallback
+
+    def test_falls_back_on_error_body_with_200(self, tmp_path):
+        """OpenRouter can return HTTP 200 with an error payload."""
+        err_resp = MagicMock()
+        err_resp.raise_for_status.return_value = None
+        err_resp.json.return_value = {"error": {"message": "model overloaded"}}
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.requests.post",
+                   side_effect=[err_resp, _make_response("ok")]) as mock_post:
+            from src.thesis_generator import generate_thesis
+            result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
+
+        assert result == "ok"
+        assert mock_post.call_count == 2
+
+    def test_sends_bearer_key_and_system_prompt(self, tmp_path):
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.requests.post", return_value=_make_response("thesis")) as mock_post:
+            from src.thesis_generator import generate_thesis
+            generate_thesis(_make_card(), iv_history_dir=tmp_path)
+
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["headers"]["Authorization"] == "Bearer sk-or-test"
+        messages = kwargs["json"]["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert "NVDA" in messages[1]["content"]
+
+    def test_inlines_iv_history_in_prompt(self, tmp_path):
         (tmp_path / "NVDA.jsonl").write_text(
             '{"date": "2026-05-15", "iv": 0.42}\n{"date": "2026-05-16", "iv": 0.45}\n'
         )
-        final_text = "NVDA IV trending up; selling put at support near volume node."
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.requests.post", return_value=_make_response("thesis")) as mock_post:
+            from src.thesis_generator import generate_thesis
+            generate_thesis(_make_card(), iv_history_dir=tmp_path)
 
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
-            with patch("src.thesis_generator.anthropic") as mock_anthropic:
-                mock_client = MagicMock()
-                mock_anthropic.Anthropic.return_value = mock_client
+        user_msg = mock_post.call_args.kwargs["json"]["messages"][1]["content"]
+        assert "recent_iv_series" in user_msg
+        assert "0.42" in user_msg and "0.45" in user_msg
 
-                tool_response = _make_tool_use_response(
-                    "toolu_1", "fetch_iv_history", {"ticker": "NVDA"}
-                )
-                end_response = _make_end_turn_response(final_text)
-                mock_client.messages.create.side_effect = [tool_response, end_response]
+    def test_retries_same_model_on_429(self, tmp_path):
+        import requests as _requests
+        err = _requests.HTTPError("429 Client Error")
+        err.response = MagicMock(status_code=429)
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.time.sleep") as mock_sleep, \
+             patch("src.thesis_generator.requests.post",
+                   side_effect=[err, _make_response("recovered")]) as mock_post:
+            from src.thesis_generator import generate_thesis
+            result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
 
-                from src.thesis_generator import generate_thesis
-                result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
+        assert result == "recovered"
+        assert mock_post.call_count == 2
+        # both attempts hit the SAME (primary) model
+        models = [c.kwargs["json"]["model"] for c in mock_post.call_args_list]
+        assert models == [DEFAULT_MODEL, DEFAULT_MODEL]
+        mock_sleep.assert_called_once()
 
-        assert result == final_text
-        assert mock_client.messages.create.call_count == 2
+    def test_strips_wrapping_quotes(self, tmp_path):
+        with patch.dict("os.environ", ENV, clear=True), \
+             patch("src.thesis_generator.requests.post",
+                   return_value=_make_response('"Quoted thesis."')):
+            from src.thesis_generator import generate_thesis
+            result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
 
-    def test_returns_empty_on_api_exception(self, tmp_path):
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
-            with patch("src.thesis_generator.anthropic") as mock_anthropic:
-                mock_client = MagicMock()
-                mock_anthropic.Anthropic.return_value = mock_client
-                mock_client.messages.create.side_effect = RuntimeError("API down")
-
-                from src.thesis_generator import generate_thesis
-                result = generate_thesis(_make_card(), iv_history_dir=tmp_path)
-
-        assert result == ""
-
-    def test_passes_cached_system_prompt(self, tmp_path):
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
-            with patch("src.thesis_generator.anthropic") as mock_anthropic:
-                mock_client = MagicMock()
-                mock_anthropic.Anthropic.return_value = mock_client
-                mock_client.messages.create.return_value = _make_end_turn_response("thesis")
-
-                from src.thesis_generator import generate_thesis
-                generate_thesis(_make_card(), iv_history_dir=tmp_path)
-
-        call_kwargs = mock_client.messages.create.call_args.kwargs
-        system = call_kwargs.get("system", [])
-        assert isinstance(system, list)
-        assert system[0]["cache_control"] == {"type": "ephemeral"}
-
-    def test_uses_opus_4_7_model(self, tmp_path):
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
-            with patch("src.thesis_generator.anthropic") as mock_anthropic:
-                mock_client = MagicMock()
-                mock_anthropic.Anthropic.return_value = mock_client
-                mock_client.messages.create.return_value = _make_end_turn_response("thesis")
-
-                from src.thesis_generator import generate_thesis
-                generate_thesis(_make_card(), iv_history_dir=tmp_path)
-
-        call_kwargs = mock_client.messages.create.call_args.kwargs
-        assert call_kwargs["model"] == "claude-opus-4-7"
-
-    def test_uses_adaptive_thinking(self, tmp_path):
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
-            with patch("src.thesis_generator.anthropic") as mock_anthropic:
-                mock_client = MagicMock()
-                mock_anthropic.Anthropic.return_value = mock_client
-                mock_client.messages.create.return_value = _make_end_turn_response("thesis")
-
-                from src.thesis_generator import generate_thesis
-                generate_thesis(_make_card(), iv_history_dir=tmp_path)
-
-        call_kwargs = mock_client.messages.create.call_args.kwargs
-        assert call_kwargs.get("thinking") == {"type": "adaptive"}
+        assert result == "Quoted thesis."
