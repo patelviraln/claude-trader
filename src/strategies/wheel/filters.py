@@ -43,6 +43,17 @@ class PhaseGateFilter:
                 reason=f"Unknown phase '{state.phase}' for {ticker}",  # type: ignore[attr-defined]
                 hard_stop=True,
             )
+        elif state.phase == "A" and getattr(state, "open_put_strike", None):  # type: ignore[attr-defined]
+            # Duplicate-entry guard: one open short put per ticker at a time
+            r = FilterResult(
+                passed=False,
+                filter_name=self.name,
+                reason=(
+                    f"Open put already active for {ticker} "
+                    f"(strike {state.open_put_strike}, expiry {state.open_put_expiry})"  # type: ignore[attr-defined]
+                ),
+                hard_stop=True,
+            )
         else:
             r = FilterResult(
                 passed=True,
