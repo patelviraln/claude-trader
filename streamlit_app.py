@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import src.strategies  # noqa: F401 — fire @register decorators
 from src.dashboard_data import (
     get_all_ticker_states,
     get_all_tracked_tickers,
@@ -27,7 +28,9 @@ from src.dashboard_data import (
     get_last_signal,
     get_recent_signals,
 )
-from src.state_store import get_ticker_state, set_ticker_state
+from src.router import load_router, resolve_strategy
+from src.state_store import get_strategy_state, get_ticker_state, set_ticker_state
+from src.strategies.registry import list_strategies
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -37,6 +40,7 @@ STATE_PATH   = "wheel_state.json"
 SIGNALS_PATH = "signals.jsonl"
 IV_DIR       = "iv_history"
 CONFIG_PATH  = "config/wheel.toml"   # default strategy config (Wheel)
+ROUTER_PATH  = Path("config/strategies.toml")
 
 PHASE_COLORS  = {"A": "#58a6ff", "B": "#bc8cff"}
 SIGNAL_COLORS = {
@@ -44,6 +48,7 @@ SIGNAL_COLORS = {
     "SELL_PUT_SPREAD": "#58a6ff", "BUY_EQUITY": "#79c0ff", "SELL_EQUITY": "#f85149",
 }
 TIER_COLORS   = {"HIGH": "#3fb950", "MEDIUM": "#d29922", "LOW": "#f85149"}
+STRATEGY_COLORS = {"wheel": "#58a6ff", "put_credit_spread": "#bc8cff", "rsi2": "#3fb950"}
 
 FIXTURES_DIR = Path("fixtures")
 
@@ -52,13 +57,36 @@ FIXTURES_DIR = Path("fixtures")
 # ---------------------------------------------------------------------------
 
 
-def _fixture_tickers() -> list[str]:
-    """Return tickers that have both ohlcv and options fixture files."""
+def _fixture_tickers(require_options: bool = True) -> list[str]:
+    """Return tickers with fixture files. Equity-only strategies (e.g. rsi2)
+    don't need an options fixture, so pass require_options=False for those."""
     if not FIXTURES_DIR.exists():
         return []
     ohlcv   = {p.stem.replace("_ohlcv", "") for p in FIXTURES_DIR.glob("*_ohlcv.json")}
+    if not require_options:
+        return sorted(ohlcv)
     options = {p.stem.replace("_options", "") for p in FIXTURES_DIR.glob("*_options.json")}
     return sorted(ohlcv & options)
+
+
+def _router_cfg() -> dict:
+    """Load config/strategies.toml; empty dict when it doesn't exist."""
+    try:
+        return load_router(ROUTER_PATH)
+    except FileNotFoundError:
+        return {}
+
+
+def _ticker_strategy(ticker: str, router_cfg: dict | None = None) -> str:
+    cfg = router_cfg if router_cfg is not None else _router_cfg()
+    if not cfg:
+        return "wheel"
+    return resolve_strategy(ticker, cfg)
+
+
+def _save_router_cfg(cfg: dict) -> None:
+    with open(ROUTER_PATH, "wb") as f:
+        tomli_w.dump(cfg, f)
 
 
 def _alpaca_available() -> bool:
@@ -98,21 +126,27 @@ def page_dashboard() -> None:
 
     states      = get_all_ticker_states(STATE_PATH)
     last_sigs   = {t: get_last_signal(t, SIGNALS_PATH) for t in tickers}
+    router_cfg  = _router_cfg()
 
     cols = st.columns(3)
     for i, ticker in enumerate(tickers):
         state = states.get(ticker, {})
         sig   = last_sigs.get(ticker)
         phase = state.get("phase", "A")
+        strat = (sig or {}).get("strategy_name") or _ticker_strategy(ticker, router_cfg)
 
         with cols[i % 3]:
-            phase_badge  = _badge(f"Phase {phase}", PHASE_COLORS.get(phase, "#8b949e"))
+            strat_badge  = _badge(strat.replace("_", " "), STRATEGY_COLORS.get(strat, "#8b949e"))
+            phase_badge  = (
+                _badge(f"Phase {phase}", PHASE_COLORS.get(phase, "#8b949e"))
+                if strat == "wheel" else ""
+            )
             sig_phase    = sig.get("signal_type", "—") if sig else "—"
             sig_color    = SIGNAL_COLORS.get(sig_phase, "#8b949e")
             signal_badge = _badge(sig_phase.replace("_", " "), sig_color) if sig else ""
 
             st.markdown(
-                f"### {ticker} &nbsp; {phase_badge} &nbsp; {signal_badge}",
+                f"### {ticker} &nbsp; {strat_badge} &nbsp; {phase_badge} &nbsp; {signal_badge}",
                 unsafe_allow_html=True,
             )
 
@@ -123,14 +157,20 @@ def page_dashboard() -> None:
                 _payload = sig.get("payload") or {}
                 c1.metric("Price",      f"${sig.get('underlying_price', 0):.2f}")
                 _mid = _leg0.get("limit_price")
-                c1.metric("Option Mid", f"${_mid:.2f}" if _mid else "—")
-                iv = _payload.get("iv_rank")
-                c2.metric("IV Rank", f"{iv:.1f}%" if iv is not None else "—")
+                _is_equity = _leg0.get("asset_class") == "equity"
+                c1.metric("Limit" if _is_equity else "Option Mid", f"${_mid:.2f}" if _mid else "—")
+                if _is_equity:
+                    c2.metric("Shares", _leg0.get("qty", 0))
+                else:
+                    iv = _payload.get("iv_rank")
+                    c2.metric("IV Rank", f"{iv:.1f}%" if iv is not None else "—")
                 tier = sig.get("confidence_tier")
                 if tier:
                     c2.markdown(_badge(tier, TIER_COLORS.get(tier, "#8b949e")), unsafe_allow_html=True)
                 if _leg0.get("strike"):
                     st.caption(f"Strike ${_leg0['strike']:.2f}  ·  Expiry {_leg0.get('expiry','—')}  ·  DTE {_payload.get('dte','—')}")
+                elif _is_equity and (sig.get("indicators") or {}).get("rsi2") is not None:
+                    st.caption(f"RSI(2) {sig['indicators']['rsi2']:.1f}  ·  SMA200 ${sig['indicators'].get('sma200') or 0:.2f}")
                 _order_ids = sig.get("order_ids") or []
                 _order_sts = sig.get("order_statuses") or []
                 if _order_ids:
@@ -162,7 +202,11 @@ def page_ticker_detail() -> None:
     default_idx = tickers.index(preselect) if preselect in tickers else 0
 
     ticker = st.selectbox("Ticker", tickers, index=default_idx)
-    st.title(ticker)
+    strat  = _ticker_strategy(ticker)
+    st.markdown(
+        f"# {ticker} &nbsp; {_badge(strat.replace('_', ' '), STRATEGY_COLORS.get(strat, '#8b949e'))}",
+        unsafe_allow_html=True,
+    )
 
     state      = get_ticker_state(STATE_PATH, ticker)
     signals    = get_recent_signals(SIGNALS_PATH, ticker=ticker, n=50)
@@ -172,10 +216,24 @@ def page_ticker_detail() -> None:
     # --- Stats row ---
     phase = state.get("phase", "A")
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Phase",       phase)
-    c2.metric("Shares Held", state.get("shares_held", 0))
-    if state.get("cost_basis"):
-        c3.metric("Cost Basis", f"${state['cost_basis']:.2f}")
+    if strat == "wheel":
+        c1.metric("Phase",       phase)
+        c2.metric("Shares Held", state.get("shares_held", 0))
+        if state.get("cost_basis"):
+            c3.metric("Cost Basis", f"${state['cost_basis']:.2f}")
+    else:
+        strat_state = get_strategy_state(strat, ticker)
+        if strat == "rsi2":
+            c1.metric("In Position", "Yes" if strat_state.get("in_position") else "No")
+            c2.metric("Shares", strat_state.get("shares", 0))
+            if strat_state.get("entry_price"):
+                c3.metric("Entry Price", f"${strat_state['entry_price']:.2f}")
+        elif strat == "put_credit_spread":
+            c1.metric("Open Spread", "Yes" if strat_state.get("open_spread") else "No")
+            if strat_state.get("short_strike"):
+                c2.metric("Short Strike", f"${strat_state['short_strike']:.2f}")
+            if strat_state.get("entry_credit"):
+                c3.metric("Entry Credit", f"${strat_state['entry_credit']:.2f}")
     if last_sig:
         c4.metric("Last Price", f"${last_sig.get('underlying_price', 0):.2f}")
         iv = (last_sig.get("payload") or {}).get("iv_rank")
@@ -211,12 +269,13 @@ def page_ticker_detail() -> None:
     if signals:
         rows = []
         for s in signals:
+            _legs = s.get("legs") or []
+            _leg0 = _legs[0] if _legs else {}
+            _payload = s.get("payload") or {}
+            _order_ids = s.get("order_ids") or []
             rows.append({
                 "Time":       s.get("signal_timestamp", "")[:16].replace("T", " "),
-                _legs = s.get("legs") or []
-                _leg0 = _legs[0] if _legs else {}
-                _payload = s.get("payload") or {}
-                _order_ids = s.get("order_ids") or []
+                "Strategy":   s.get("strategy_name", "—"),
                 "Signal":     s.get("signal_type", ""),
                 "Strike":     f"${_leg0['strike']:.2f}" if _leg0.get("strike") else "—",
                 "Expiry":     _leg0.get("expiry", "—"),
@@ -230,7 +289,9 @@ def page_ticker_detail() -> None:
     else:
         st.info(f"No signals recorded for {ticker}.")
 
-    # --- Phase transition ---
+    # --- Phase transition (Wheel-only concept) ---
+    if strat != "wheel":
+        return
     st.subheader("Phase Transition")
     if phase == "A":
         with st.form("assign_form"):
@@ -258,23 +319,40 @@ def page_ticker_detail() -> None:
 # Page: Run Signals
 # ---------------------------------------------------------------------------
 
+# Strategies that never touch an options chain (fixture needs OHLCV only)
+EQUITY_ONLY_STRATEGIES = {"rsi2"}
+
+
 def page_run_signals() -> None:
     st.title("Run Signals")
-    st.caption("Scan tickers through the 7-filter pipeline and optionally place paper orders.")
+    st.caption("Scan tickers through each strategy's filter pipeline and optionally place paper orders.")
 
-    cfg     = _load_config()
-    tracked = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
-    fix_tickers = _fixture_tickers()
+    tracked    = get_all_tracked_tickers(STATE_PATH, SIGNALS_PATH)
+    router_cfg = _router_cfg()
+
+    strategy_options = (["auto (router)"] if router_cfg else []) + sorted(list_strategies())
+    col_s, col_a = st.columns(2)
+    strategy_choice = col_s.selectbox(
+        "Strategy", strategy_options, key="rs_strategy",
+        help="auto resolves each ticker via config/strategies.toml; "
+             "picking a name forces that strategy for all selected tickers.",
+    )
+    strategy_name = "auto" if strategy_choice.startswith("auto") else strategy_choice
+
     adapters = (["alpaca"] if _alpaca_available() else []) + ["fixture"]
+    adapter = col_a.radio("Adapter", adapters, horizontal=True, key="rs_adapter")
 
-    adapter = st.radio("Adapter", adapters, horizontal=True, key="rs_adapter")
     if adapter == "fixture":
+        require_options = strategy_name not in EQUITY_ONLY_STRATEGIES and strategy_name != "auto"
+        fix_tickers = _fixture_tickers(require_options=require_options)
         pool = [t for t in tracked if t in fix_tickers] or fix_tickers
         if not pool:
             st.warning("No fixture files found in fixtures/.")
         missing = [t for t in tracked if t not in fix_tickers]
         if missing:
             st.caption(f"No fixture for: {', '.join(missing)} — add fixture files or use Alpaca.")
+        if strategy_name == "auto":
+            st.caption("auto: tickers routed to an options strategy still need an options fixture.")
     else:
         pool = tracked
     if not _alpaca_available():
@@ -317,22 +395,35 @@ def page_run_signals() -> None:
                     generate_thesis=thesis,
                     execute=execute,
                     executor=executor,
+                    strategy_name=strategy_name if router_cfg else None,
                 )
 
                 for card in cards:
                     color = SIGNAL_COLORS.get(card.signal_type, "#8b949e")
                     tier_color = TIER_COLORS.get(card.confidence_tier or "", "#8b949e")
+                    strat_badge = _badge(
+                        card.strategy_name.replace("_", " "),
+                        STRATEGY_COLORS.get(card.strategy_name, "#8b949e"),
+                    )
                     if card.signal_type == "NO_SIGNAL":
+                        st.markdown(strat_badge, unsafe_allow_html=True)
                         st.error(f"**{card.ticker}** — NO SIGNAL: {card.no_signal_reason}")
                     else:
                         leg0 = card.legs[0] if card.legs else None
+                        is_equity = leg0 is not None and leg0.asset_class == "equity"
                         cols = st.columns([2, 1, 1, 1, 1, 2])
-                        cols[0].markdown(_badge(card.signal_type.replace("_", " "), color), unsafe_allow_html=True)
+                        cols[0].markdown(f"{strat_badge} {_badge(card.signal_type.replace('_', ' '), color)}", unsafe_allow_html=True)
                         cols[0].markdown(f"**{card.ticker}**")
-                        cols[1].metric("Strike",  f"${leg0.strike:.2f}" if leg0 and leg0.strike else "—")
-                        cols[2].metric("Mid",     f"${leg0.limit_price:.2f}" if leg0 and leg0.limit_price else "—")
-                        iv_rank = card.payload.get("iv_rank")
-                        cols[3].metric("IV Rank", f"{iv_rank:.1f}%" if iv_rank is not None else "—")
+                        if is_equity:
+                            cols[1].metric("Shares", leg0.qty)
+                            cols[2].metric("Limit",  f"${leg0.limit_price:.2f}" if leg0.limit_price else "—")
+                            rsi2_val = card.indicators.get("rsi2")
+                            cols[3].metric("RSI(2)", f"{rsi2_val:.1f}" if rsi2_val is not None else "—")
+                        else:
+                            cols[1].metric("Strike",  f"${leg0.strike:.2f}" if leg0 and leg0.strike else "—")
+                            cols[2].metric("Mid",     f"${leg0.limit_price:.2f}" if leg0 and leg0.limit_price else "—")
+                            iv_rank = card.payload.get("iv_rank")
+                            cols[3].metric("IV Rank", f"{iv_rank:.1f}%" if iv_rank is not None else "—")
                         cols[4].markdown(_badge(card.confidence_tier or "—", tier_color), unsafe_allow_html=True)
                         if card.order_ids:
                             cols[5].success(f"Order {card.order_ids[0][:8]}… [{card.order_statuses[0] if card.order_statuses else '—'}]")
@@ -437,9 +528,54 @@ def page_configuration() -> None:
     wheel = cfg.get("wheel", {})
     sched = cfg.get("scheduler", {})
 
-    tab_strategy, tab_scheduler, tab_tickers = st.tabs([
-        "Strategy Parameters", "Scheduler", "Tracked Tickers"
+    tab_strategy, tab_router, tab_scheduler, tab_tickers = st.tabs([
+        "Strategy Parameters", "Router", "Scheduler", "Tracked Tickers"
     ])
+
+    # ---- Router (ticker → strategy assignments) ----
+    with tab_router:
+        st.subheader("Strategy Router")
+        router_cfg = _router_cfg()
+        if not router_cfg:
+            st.info("No config/strategies.toml found — all tickers run the Wheel strategy.")
+        else:
+            st.caption("Which strategy each ticker runs. Saved to `config/strategies.toml`. "
+                       "Note: saving rewrites the file and drops TOML comments.")
+            assignments = router_cfg.get("router", {}).get("assignments", {})
+            default_strat = router_cfg.get("router", {}).get("default_strategy", "wheel")
+            st.markdown(f"Default strategy (unassigned tickers): **{default_strat}**")
+
+            if assignments:
+                df_router = pd.DataFrame(
+                    [{"Ticker": t, "Strategy": s} for t, s in sorted(assignments.items())]
+                )
+                st.dataframe(df_router, use_container_width=True, hide_index=True)
+
+            known_strategies = sorted(list_strategies())
+            col_assign, col_unassign = st.columns(2)
+            with col_assign:
+                st.markdown("**Assign / Reassign Ticker**")
+                with st.form("router_assign_form"):
+                    r_ticker = st.text_input("Ticker").upper().strip()
+                    r_strat  = st.selectbox("Strategy", known_strategies)
+                    if st.form_submit_button("Save Assignment", type="primary"):
+                        if not r_ticker:
+                            st.warning("Enter a ticker symbol.")
+                        else:
+                            router_cfg.setdefault("router", {}).setdefault("assignments", {})[r_ticker] = r_strat
+                            _save_router_cfg(router_cfg)
+                            st.success(f"{r_ticker} → {r_strat}")
+                            st.rerun()
+            with col_unassign:
+                st.markdown("**Remove Assignment**")
+                with st.form("router_unassign_form"):
+                    r_remove = st.selectbox("Ticker", sorted(assignments.keys()) or ["—"])
+                    if st.form_submit_button("Remove", type="secondary"):
+                        if r_remove and r_remove != "—":
+                            router_cfg.get("router", {}).get("assignments", {}).pop(r_remove, None)
+                            _save_router_cfg(router_cfg)
+                            st.success(f"Removed {r_remove} (falls back to {default_strat})")
+                            st.rerun()
 
     # ---- Strategy Parameters ----
     with tab_strategy:
@@ -612,14 +748,14 @@ def page_configuration() -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="Wheel Trader",
+        page_title="Claude Trader",
         page_icon="📈",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
-    st.sidebar.title("Wheel Trader")
-    st.sidebar.caption("Wheel options strategy system")
+    st.sidebar.title("Claude Trader")
+    st.sidebar.caption("Multi-strategy signal system")
     st.sidebar.divider()
 
     pages = ["Dashboard", "Ticker Detail", "Run Signals", "Backtest", "Configuration"]
