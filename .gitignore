@@ -35,3 +35,12 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code local worktrees
+.claude/worktrees/
+
+# Per-strategy runtime state (state/{strategy}.json)
+state/
+
+# Ad-hoc test scan output
+signals_test.jsonl

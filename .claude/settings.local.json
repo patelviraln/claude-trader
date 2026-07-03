@@ -3,7 +3,36 @@
     "allow": [
       "Bash(git commit -m ' *)",
       "Bash(git add *)",
-      "PowerShell(python -m pip install \"pandas-ta==0.3.14b0\" pydantic structlog rich python-dotenv 2>&1)"
+      "PowerShell(python -m pip install \"pandas-ta==0.3.14b0\" pydantic structlog rich python-dotenv 2>&1)",
+      "PowerShell(git fetch *)",
+      "PowerShell(git pull *)",
+      "PowerShell(python -m py_compile streamlit_app.py; echo \"exit: $LASTEXITCODE\")",
+      "PowerShell(python -m pytest -q 2>&1 | Select-Object -Last 5)",
+      "PowerShell(python -m pytest -q --tb=no -p no:warnings 2>&1 | Select-Object -Last 10)",
+      "PowerShell(Get-Content fixtures\\\\WXYZ_ohlcv.json -TotalCount 3; python -c \"import json; d=json.load\\(open\\('fixtures/WXYZ_ohlcv.json'\\)\\); print\\(type\\(d\\), len\\(d\\)\\); print\\(d[0]\\)\")",
+      "PowerShell(python \"C:\\\\Users\\\\patel\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-patel-claude-trader\\\\caaa5cce-f057-4989-aeee-0623240bff3e\\\\scratchpad\\\\gen_tlt_fixture.py\")",
+      "PowerShell(python -m pytest tests/unit/test_rsi2.py -q --tb=short -p no:warnings 2>&1 | Select-Object -Last 15)",
+      "PowerShell(python -m pytest tests/unit/test_scheduler.py tests/integration -q --tb=short -p no:warnings 2>&1 | Select-Object -Last 6)",
+      "PowerShell(python -m pytest tests/unit/test_scheduler.py -q --tb=short -p no:warnings 2>&1 | Select-Object -Last 6)",
+      "PowerShell(python -m py_compile streamlit_app.py; echo \"compile: $LASTEXITCODE\"; python -c \"import ast; ast.parse\\(open\\('streamlit_app.py', encoding='utf-8'\\).read\\(\\)\\)\" ; echo \"parse: $LASTEXITCODE\")",
+      "PowerShell(streamlit run streamlit_app.py --server.headless true --server.port 8599)",
+      "PowerShell($ok=$false; foreach \\($i in 1..15\\) { try { $r = Invoke-WebRequest -Uri \"http://localhost:8599/healthz\" -UseBasicParsing -TimeoutSec 2; if \\($r.StatusCode -eq 200\\) { $ok=$true; break } } catch { Start-Sleep -Seconds 1 } }; if \\($ok\\) { \"healthz OK\" } else { \"FAILED to reach app\" })",
+      "PowerShell(python -m streamlit run streamlit_app.py --server.headless true --server.port 8599)",
+      "PowerShell($ok=$false; foreach \\($i in 1..20\\) { try { $r = Invoke-WebRequest -Uri \"http://localhost:8599/healthz\" -UseBasicParsing -TimeoutSec 2; if \\($r.StatusCode -eq 200\\) { $ok=$true; break } } catch { Start-Sleep -Seconds 1 } }; if \\($ok\\) { \"healthz OK\" ; $p = Invoke-WebRequest -Uri \"http://localhost:8599\" -UseBasicParsing -TimeoutSec 5; \"index status: $\\($p.StatusCode\\)\" } else { \"FAILED to reach app\" })",
+      "PowerShell(python \"C:\\\\Users\\\\patel\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-patel-claude-trader\\\\caaa5cce-f057-4989-aeee-0623240bff3e\\\\scratchpad\\\\smoke_pages.py\" 2>&1)",
+      "PowerShell(python -m pytest -q --tb=short -p no:warnings 2>&1 | Select-Object -Last 8)",
+      "PowerShell(python -m pytest --collect-only -q 2>$null | Select-Object -Last 2)",
+      "PowerShell(git checkout *)",
+      "PowerShell(python -m pytest tests/unit/test_thesis_generator.py -q --tb=short -p no:warnings 2>&1 | Select-Object -Last 6)",
+      "PowerShell(python run_signals.py --tickers TLT --adapter fixture --thesis --signals-out signals_test.jsonl --json-only 2>&1 | Select-String '\"thesis_text\"' | ForEach-Object { \\($_ -split '\"thesis_text\":'\\)[1].Substring\\(0, [Math]::Min\\(300, \\($_ -split '\"thesis_text\":'\\)[1].Length\\)\\) })",
+      "PowerShell(python -m pytest tests/unit/test_thesis_generator.py -q --tb=short -p no:warnings 2>&1 | Select-Object -Last 4)",
+      "PowerShell(python \"C:\\\\Users\\\\patel\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-patel-claude-trader\\\\caaa5cce-f057-4989-aeee-0623240bff3e\\\\scratchpad\\\\check_or.py\")",
+      "PowerShell(python -m pytest -q --tb=no -p no:warnings 2>&1 | Select-Object -Last 4)",
+      "PowerShell(python -c \"from dotenv import dotenv_values; v = dotenv_values\\('.env'\\); [print\\(k, 'len=', len\\(\\(v.get\\(k\\) or ''\\).strip\\(\\)\\), 'placeholder=', 'your_' in \\(v.get\\(k\\) or ''\\)\\) for k in \\('ALPACA_API_KEY','ALPACA_SECRET_KEY','ALPACA_BASE_URL'\\)]\")",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\patel\\\\claude-trader\\\\.env\"\\)[0..5]; \\($bytes | ForEach-Object { $_.ToString\\(\"X2\"\\) }\\) -join \" \")",
+      "PowerShell(python -c \"p=r'C:\\\\Users\\\\patel\\\\claude-trader\\\\.env'; s=open\\(p, encoding='utf-8-sig'\\).read\\(\\); open\\(p, 'w', encoding='utf-8', newline='\\\\n'\\).write\\(s\\)\"; $b = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\patel\\\\claude-trader\\\\.env\"\\)[0..2]; \\($b | ForEach-Object { $_.ToString\\(\"X2\"\\) }\\) -join \" \")",
+      "PowerShell(python -c \"from dotenv import dotenv_values; v = dotenv_values\\(r'C:\\\\Users\\\\patel\\\\claude-trader\\\\.env'\\); [print\\(k, 'len=', len\\(\\(v.get\\(k\\) or ''\\).strip\\(\\)\\)\\) for k in \\('ALPACA_API_KEY','ALPACA_SECRET_KEY','OPENROUTER_API_KEY'\\)]\")",
+      "PowerShell(python -c \"from dotenv import load_dotenv; load_dotenv\\(\\); from src.adapters.alpaca_adapter import AlpacaPaperAdapter; a = AlpacaPaperAdapter\\(\\); df = a.get_ohlcv\\('AAPL', bars=5\\); print\\('OK — got', len\\(df\\), 'bars, last close', float\\(df['close'].iloc[-1]\\)\\)\")"
     ]
   }
 }
