@@ -584,8 +584,13 @@ def _positions_body() -> None:
 
     total_upl = sum(p.unrealized_pnl or 0.0 for p in positions)
     total_mv  = sum(p.market_value or 0.0 for p in positions)
+    from src.risk_manager import load_risk_rules
+    risk_rules = load_risk_rules(ROUTER_PATH if ROUTER_PATH.exists() else CONFIG_PATH)
+    max_total = int(risk_rules.get("max_positions_total", 10))
+
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Open Positions",  len(positions))
+    m1.metric("Open Positions",  f"{len(positions)} / {max_total}",
+              help="Current vs max_positions_total risk limit")
     m2.metric("Market Value",    f"${total_mv:,.2f}")
     m3.metric("Unrealized P&L",  f"${total_upl:,.2f}")
     firing = [d for d in decisions.values() if d is not None]
@@ -1319,14 +1324,80 @@ def _config_tickers_tab() -> None:
                     st.rerun(scope="fragment")
 
 
+@st.fragment
+def _config_risk_tab() -> None:
+    st.subheader("Risk Limits & Exit Rules")
+    if not ROUTER_PATH.exists():
+        st.info("Requires config/strategies.toml (router mode).")
+        return
+    st.caption("Every order is validated against [risk] before placement; "
+               "[exit_rules] close short options automatically each morning. "
+               "Saved to `config/strategies.toml`.")
+
+    cfg = _router_cfg()
+    risk = {**{"enabled": True, "max_position_pct": 5.0, "max_positions_total": 10,
+               "max_positions_per_ticker": 1, "min_buying_power_pct": 20.0},
+            **cfg.get("risk", {})}
+    exits = {**{"enabled": True, "profit_target_pct": 50.0, "dte_close": 21,
+                "stop_loss_multiple": 2.0},
+             **cfg.get("exit_rules", {})}
+
+    with st.form("risk_form"):
+        st.markdown("**Position Sizing & Concentration**")
+        r1, r2 = st.columns(2)
+        risk_enabled = r1.toggle("Risk checks enabled", value=bool(risk["enabled"]))
+        auto_exec    = r2.toggle(
+            "Auto-execute daily signals",
+            value=bool(cfg.get("scheduler", {}).get("auto_execute", False)),
+            help="Scheduler places risk-gated paper orders for actionable signals",
+        )
+        c1, c2 = st.columns(2)
+        max_pos_pct = c1.number_input("Max capital per position (% of equity)",
+                                      min_value=0.5, max_value=50.0,
+                                      value=float(risk["max_position_pct"]), step=0.5, format="%.1f")
+        bp_reserve  = c2.number_input("Buying-power reserve (% of equity)",
+                                      min_value=0.0, max_value=80.0,
+                                      value=float(risk["min_buying_power_pct"]), step=5.0, format="%.0f")
+        c3, c4 = st.columns(2)
+        max_total   = c3.number_input("Max open positions (total)", min_value=1, max_value=50,
+                                      value=int(risk["max_positions_total"]), step=1)
+        max_per     = c4.number_input("Max positions per ticker", min_value=1, max_value=10,
+                                      value=int(risk["max_positions_per_ticker"]), step=1)
+
+        st.markdown("**Exit Rules (short options)**")
+        e1, e2, e3 = st.columns(3)
+        pt  = e1.number_input("Profit target (% of premium)", min_value=0.0, max_value=95.0,
+                              value=float(exits["profit_target_pct"]), step=5.0, format="%.0f")
+        dte = e2.number_input("Close at DTE", min_value=0, max_value=45,
+                              value=int(exits["dte_close"]), step=1)
+        sl  = e3.number_input("Stop-loss (x premium)", min_value=0.0, max_value=10.0,
+                              value=float(exits["stop_loss_multiple"]), step=0.5, format="%.1f")
+
+        if st.form_submit_button("Save Risk & Exit Settings", type="primary"):
+            cfg["risk"] = {
+                "enabled": risk_enabled,
+                "max_position_pct": max_pos_pct,
+                "max_positions_total": max_total,
+                "max_positions_per_ticker": max_per,
+                "min_buying_power_pct": bp_reserve,
+            }
+            cfg["exit_rules"] = {**cfg.get("exit_rules", {}), "profit_target_pct": pt,
+                                 "dte_close": dte, "stop_loss_multiple": sl}
+            cfg.setdefault("scheduler", {})["auto_execute"] = auto_exec
+            _save_router_cfg(cfg)
+            st.toast("Risk & exit settings saved.", icon="✅")
+
+
 def page_configuration() -> None:
     st.title("Configuration")
 
-    tab_strategy, tab_router, tab_scheduler, tab_tickers = st.tabs([
-        "Strategy Parameters", "Router", "Scheduler", "Tracked Tickers"
+    tab_strategy, tab_risk, tab_router, tab_scheduler, tab_tickers = st.tabs([
+        "Strategy Parameters", "Risk & Exits", "Router", "Scheduler", "Tracked Tickers"
     ])
     with tab_strategy:
         _config_strategy_tab()
+    with tab_risk:
+        _config_risk_tab()
     with tab_router:
         _config_router_tab()
     with tab_scheduler:

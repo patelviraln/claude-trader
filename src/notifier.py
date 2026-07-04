@@ -56,6 +56,8 @@ def build_run_summary(
     reconcile_changes: list[dict],
     realized: dict | None = None,
     errors: list[str] | None = None,
+    orders_placed: dict[str, list[str]] | None = None,
+    risk_blocks: dict[str, str] | None = None,
 ) -> str:
     """Assemble the end-of-run summary body from scheduler results."""
     lines: list[str] = []
@@ -64,6 +66,15 @@ def build_run_summary(
     lines.append(f"Signals: {len(cards_by_ticker)} scanned, {len(actionable)} actionable")
     for t, s in sorted(actionable.items()):
         lines.append(f"  • {t}: {s}")
+
+    if orders_placed:
+        lines.append(f"Orders placed: {len(orders_placed)}")
+        for t, ids in sorted(orders_placed.items()):
+            lines.append(f"  • {t}: {ids[0][:8]}…")
+    if risk_blocks:
+        lines.append(f"Risk-blocked: {len(risk_blocks)}")
+        for t, flag in sorted(risk_blocks.items()):
+            lines.append(f"  • {t}: {flag.replace('risk_blocked: ', '')}")
 
     if exit_decisions:
         lines.append(f"Exits: {len(exit_decisions)} closed")

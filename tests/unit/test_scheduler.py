@@ -26,12 +26,18 @@ def _write_toml(tmp_path: Path, scheduler_section: dict) -> Path:
     return config_path
 
 
-def _write_router_toml(tmp_path: Path, assignments: dict[str, str]) -> Path:
+def _write_router_toml(
+    tmp_path: Path,
+    assignments: dict[str, str],
+    adapter: str = "fixture",
+    auto_execute: bool = False,
+) -> Path:
     """Write a minimal strategies.toml-style router config and return its path."""
     lines = ['[router]\ndefault_strategy = "wheel"\n\n[router.assignments]\n']
     for ticker, strat in assignments.items():
         lines.append(f'{ticker} = "{strat}"\n')
-    lines.append('\n[scheduler]\nadapter = "fixture"\n')
+    lines.append(f'\n[scheduler]\nadapter = "{adapter}"\n'
+                 f'auto_execute = {str(auto_execute).lower()}\n')
     config_path = tmp_path / "strategies.toml"
     config_path.write_text("".join(lines), encoding="utf-8")
     return config_path
@@ -194,3 +200,46 @@ class TestRunJobRouted:
             from scheduler import run_job
             run_job(cfg)
         mock_run.assert_not_called()
+
+    def test_auto_execute_passes_executor(self, tmp_path):
+        """Phase 10: auto_execute=true routes orders through the executor."""
+        cfg = _write_router_toml(tmp_path, {"AAPL": "wheel"},
+                                 adapter="alpaca", auto_execute=True)
+        mock_card = MagicMock()
+        mock_card.signal_type = "SELL_PUT"
+        mock_card.order_ids = ["ord-1"]
+        mock_card.risk_flags = []
+        mock_executor = MagicMock()
+
+        with patch("scheduler.build_adapter"), \
+             patch("src.order_executor.AlpacaOrderExecutor", return_value=mock_executor), \
+             patch("src.reconcile.run_reconciliation", return_value=[]), \
+             patch("src.exit_engine.run_exits", return_value=[]), \
+             patch("src.pnl_ledger.realized_pnl_summary", return_value={"total": 0.0, "by_strategy": {}}), \
+             patch("scheduler.run_signals_batch", return_value=[mock_card]) as mock_run:
+            from scheduler import run_job
+            run_job(cfg)
+
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["execute"] is True
+        assert kwargs["executor"] is mock_executor
+
+    def test_no_auto_execute_by_default(self, tmp_path):
+        cfg = _write_router_toml(tmp_path, {"AAPL": "wheel"}, adapter="alpaca")
+        mock_card = MagicMock()
+        mock_card.signal_type = "NO_SIGNAL"
+        mock_card.order_ids = []
+        mock_card.risk_flags = []
+
+        with patch("scheduler.build_adapter"), \
+             patch("src.order_executor.AlpacaOrderExecutor", return_value=MagicMock()), \
+             patch("src.reconcile.run_reconciliation", return_value=[]), \
+             patch("src.exit_engine.run_exits", return_value=[]), \
+             patch("src.pnl_ledger.realized_pnl_summary", return_value={"total": 0.0, "by_strategy": {}}), \
+             patch("scheduler.run_signals_batch", return_value=[mock_card]) as mock_run:
+            from scheduler import run_job
+            run_job(cfg)
+
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["execute"] is False
+        assert kwargs["executor"] is None

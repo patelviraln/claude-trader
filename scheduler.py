@@ -118,8 +118,13 @@ def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
         log.error("scheduler.adapter_error", error=str(exc))
         return
 
+    # Phase 10: auto-execute actionable signals (risk-gated) when configured
+    auto_execute = bool(sched_cfg.get("auto_execute", False)) and executor is not None
+
     results = {"ok": [], "error": []}
     signal_types: dict[str, str] = {}
+    orders_placed: dict[str, list[str]] = {}
+    risk_blocks: dict[str, str] = {}
     for strategy_name, tickers in groups.items():
         for ticker in tickers:
             try:
@@ -129,11 +134,21 @@ def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
                     print_output=True,
                     strategy_name=strategy_name,
                     router_config_path=config_path,
+                    execute=auto_execute,
+                    executor=executor if auto_execute else None,
                 )
                 results["ok"].append(ticker)
-                signal_types[ticker] = cards[0].signal_type if cards else "?"
+                card = cards[0] if cards else None
+                signal_types[ticker] = card.signal_type if card else "?"
+                if card is not None:
+                    if card.order_ids:
+                        orders_placed[ticker] = card.order_ids
+                    for flag in card.risk_flags:
+                        if flag.startswith("risk_blocked"):
+                            risk_blocks[ticker] = flag
                 log.info("scheduler.ticker_done", ticker=ticker, strategy=strategy_name,
-                         signal_type=signal_types[ticker])
+                         signal_type=signal_types[ticker],
+                         orders=orders_placed.get(ticker, []))
             except Exception as exc:
                 results["error"].append(ticker)
                 errors.append(f"{ticker}: {exc}")
@@ -152,7 +167,8 @@ def _run_job_routed(router_cfg: dict, config_path: Path) -> None:
     try:
         from src.notifier import build_run_summary, send_summary
         body = build_run_summary(exit_decisions, signal_types, reconcile_changes,
-                                 realized=realized, errors=errors)
+                                 realized=realized, errors=errors,
+                                 orders_placed=orders_placed, risk_blocks=risk_blocks)
         send_summary("Claude Trader — daily run", body)
     except Exception as exc:
         log.error("scheduler.notify_error", error=str(exc))

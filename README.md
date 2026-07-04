@@ -68,9 +68,10 @@ One scheduler run executes the full lifecycle, in order:
 ```
 1. Reconcile   — sync strategy state with live positions (fills, assignments, closes)
 2. Exits       — close short options by rule: 50% profit target, 21 DTE, 2x stop-loss
-3. Scans       — route each ticker to its strategy, emit signals, place orders
+3. Scans       — route each ticker to its strategy, emit signals; with auto_execute,
+                 place paper orders — every order risk-gated first (Phase 10)
 4. Fill ledger — persist new fills to fills.jsonl (realized P&L source of truth)
-5. Summary     — push/write a run report (signals, exits, synced state, realized P&L)
+5. Summary     — push/write a run report (signals, orders, risk blocks, exits, P&L)
 ```
 
 ```bash
@@ -86,15 +87,31 @@ python scheduler.py               # blocking cron loop (Mon-Fri at [scheduler] t
 .\scripts\register_daily_task.ps1 -Remove
 ```
 
-Exit rules live in `[exit_rules]` of `config/strategies.toml`:
+Risk limits and exit rules live in `config/strategies.toml` (editable from the
+dashboard's **Risk & Exits** tab):
 
 ```toml
+[risk]                             # enforced before EVERY order (Phase 10)
+enabled                  = true
+max_position_pct         = 5.0    # capital per new position, % of account equity
+max_positions_total      = 10     # max concurrent open positions
+max_positions_per_ticker = 1      # max per underlying
+min_buying_power_pct     = 20.0   # % of equity kept free after any new trade
+
 [exit_rules]
 enabled            = true
 profit_target_pct  = 50.0   # close when >= this % of premium has decayed
 dte_close          = 21     # close anything at/under this many days to expiry
 stop_loss_multiple = 2.0    # close when mark >= this multiple of premium collected
+
+[scheduler]
+auto_execute = true          # daily runs place risk-gated paper orders
 ```
+
+Capital requirements per signal: cash-secured puts reserve `strike x 100`;
+spreads reserve their defined max loss; equity buys reserve notional; covered
+calls and closing trades are always allowed. Rejected orders are recorded on
+the signal card (`risk_blocked: ...`) and in the daily summary — never placed.
 
 ---
 
@@ -264,8 +281,8 @@ claude-trader/
 | Phase 8 — position tracking & mark-to-market | ✅ |
 | Phase 9 — exit rules (50% PT / 21 DTE / 2× SL) | ✅ |
 | Loop hardening — reconciliation, realized P&L ledger, daily summary, task scheduling | ✅ |
-| Phase 10 — risk management & position sizing (BP checks, concentration limits) | next |
-| Phase 11 — event/calendar awareness (earnings, FOMC, ex-div) | planned |
+| Phase 10 — risk management, position sizing, risk-gated auto-execution | ✅ |
+| Phase 11 — event/calendar awareness (earnings, FOMC, ex-div) | next |
 | Phase 13 — generic multi-strategy backtest engine with capital constraints | planned |
 | Phase 14 — full notifications; Phase 16 — production infra; Phase 17 — live trading harness | planned |
 
