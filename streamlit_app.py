@@ -202,62 +202,64 @@ def _dashboard_grid(strat_filter: str) -> None:
             st.info(f"No tickers currently on **{strat_filter}**.")
             return
 
-    cols = st.columns(3)
-    for i, ticker in enumerate(tickers):
-        state = states.get(ticker, {})
-        sig   = last_sigs.get(ticker)
-        phase = state.get("phase", "A")
-        strat = (sig or {}).get("strategy_name") or _ticker_strategy(ticker, router_cfg)
+    CARD_HEIGHT = 330  # uniform card height keeps every grid row aligned
 
-        with cols[i % 3]:
-            phase_badge  = (
-                _badge(PHASE_LABELS.get(phase, phase), PHASE_COLORS.get(phase, "#8b949e"))
-                if strat == "wheel" else ""
-            )
-            sig_phase    = sig.get("signal_type", "—") if sig else "—"
-            sig_color    = SIGNAL_COLORS.get(sig_phase, "#8b949e")
-            signal_badge = _badge(sig_phase.replace("_", " "), sig_color) if sig else ""
+    for row_start in range(0, len(tickers), 3):
+        row_cols = st.columns(3, gap="medium")
+        for col, ticker in zip(row_cols, tickers[row_start:row_start + 3]):
+            state = states.get(ticker, {})
+            sig   = last_sigs.get(ticker)
+            phase = state.get("phase", "A")
+            strat = (sig or {}).get("strategy_name") or _ticker_strategy(ticker, router_cfg)
 
-            st.markdown(
-                f"### {ticker} &nbsp; {_strategy_badge(strat)} &nbsp; {phase_badge} &nbsp; {signal_badge}",
-                unsafe_allow_html=True,
-            )
+            with col, st.container(border=True, height=CARD_HEIGHT):
+                phase_badge  = (
+                    _badge(PHASE_LABELS.get(phase, phase), PHASE_COLORS.get(phase, "#8b949e"))
+                    if strat == "wheel" else ""
+                )
+                sig_phase    = sig.get("signal_type", "—") if sig else "—"
+                sig_color    = SIGNAL_COLORS.get(sig_phase, "#8b949e")
+                signal_badge = _badge(sig_phase.replace("_", " "), sig_color) if sig else ""
 
-            if sig:
-                c1, c2 = st.columns(2)
-                _legs = sig.get("legs") or []
-                _leg0 = _legs[0] if _legs else {}
-                _payload = sig.get("payload") or {}
-                c1.metric("Price",      f"${sig.get('underlying_price', 0):.2f}")
-                _mid = _leg0.get("limit_price")
-                _is_equity = _leg0.get("asset_class") == "equity"
-                c1.metric("Limit" if _is_equity else "Option Mid", f"${_mid:.2f}" if _mid else "—")
-                if _is_equity:
-                    c2.metric("Shares", _leg0.get("qty", 0))
+                st.markdown(
+                    f"### {ticker} &nbsp; {_strategy_badge(strat)} &nbsp; {phase_badge} &nbsp; {signal_badge}",
+                    unsafe_allow_html=True,
+                )
+
+                if sig:
+                    c1, c2 = st.columns(2)
+                    _legs = sig.get("legs") or []
+                    _leg0 = _legs[0] if _legs else {}
+                    _payload = sig.get("payload") or {}
+                    c1.metric("Price",      f"${sig.get('underlying_price', 0):.2f}")
+                    _mid = _leg0.get("limit_price")
+                    _is_equity = _leg0.get("asset_class") == "equity"
+                    c1.metric("Limit" if _is_equity else "Option Mid", f"${_mid:.2f}" if _mid else "—")
+                    if _is_equity:
+                        c2.metric("Shares", _leg0.get("qty", 0))
+                    else:
+                        iv = _payload.get("iv_rank")
+                        c2.metric("IV Rank", f"{iv:.1f}%" if iv is not None else "—")
+                    tier = sig.get("confidence_tier")
+                    if tier:
+                        c2.markdown(_badge(tier, TIER_COLORS.get(tier, "#8b949e")), unsafe_allow_html=True)
+                    if _leg0.get("strike"):
+                        st.caption(f"Strike ${_leg0['strike']:.2f}  ·  Expiry {_leg0.get('expiry','—')}  ·  DTE {_payload.get('dte','—')}")
+                    elif _is_equity and (sig.get("indicators") or {}).get("rsi2") is not None:
+                        st.caption(f"RSI(2) {sig['indicators']['rsi2']:.1f}  ·  SMA200 ${sig['indicators'].get('sma200') or 0:.2f}")
+                    _order_ids = sig.get("order_ids") or []
+                    _order_sts = sig.get("order_statuses") or []
+                    if _order_ids:
+                        st.caption(f"Order: {_order_ids[0][:12]}…  [{_order_sts[0] if _order_sts else '—'}]")
                 else:
-                    iv = _payload.get("iv_rank")
-                    c2.metric("IV Rank", f"{iv:.1f}%" if iv is not None else "—")
-                tier = sig.get("confidence_tier")
-                if tier:
-                    c2.markdown(_badge(tier, TIER_COLORS.get(tier, "#8b949e")), unsafe_allow_html=True)
-                if _leg0.get("strike"):
-                    st.caption(f"Strike ${_leg0['strike']:.2f}  ·  Expiry {_leg0.get('expiry','—')}  ·  DTE {_payload.get('dte','—')}")
-                elif _is_equity and (sig.get("indicators") or {}).get("rsi2") is not None:
-                    st.caption(f"RSI(2) {sig['indicators']['rsi2']:.1f}  ·  SMA200 ${sig['indicators'].get('sma200') or 0:.2f}")
-                _order_ids = sig.get("order_ids") or []
-                _order_sts = sig.get("order_statuses") or []
-                if _order_ids:
-                    st.caption(f"Order: {_order_ids[0][:12]}…  [{_order_sts[0] if _order_sts else '—'}]")
-            else:
-                st.caption("No signals yet")
+                    st.caption("No signals yet")
 
-            if state.get("cost_basis"):
-                st.caption(f"Cost basis ${state['cost_basis']:.2f}  ·  {state.get('assignment_date','')}")
+                if state.get("cost_basis"):
+                    st.caption(f"Cost basis ${state['cost_basis']:.2f}  ·  {state.get('assignment_date','')}")
 
-            if st.button("View Details", key=f"detail_{ticker}", use_container_width=True):
-                st.session_state["_detail_ticker"] = ticker
-                st.switch_page(PAGE_TICKER_DETAIL)
-            st.divider()
+                if st.button("View Details", key=f"detail_{ticker}", use_container_width=True):
+                    st.session_state["_detail_ticker"] = ticker
+                    st.switch_page(PAGE_TICKER_DETAIL)
 
 
 def page_dashboard() -> None:
