@@ -45,6 +45,26 @@ def build_adapter(adapter_name: str):
         raise ValueError(f"Unknown adapter: {adapter_name}")
 
 
+HEARTBEAT_PATH = Path("logs/last_run.json")
+
+
+def _write_heartbeat(ok: bool, detail: str = "") -> None:
+    """Record that a run completed — the watchdog alerts when this goes stale."""
+    import datetime as _dt
+    import json as _json
+    try:
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        now = _dt.datetime.now(_dt.timezone.utc)
+        HEARTBEAT_PATH.write_text(_json.dumps({
+            "date": _dt.date.today().isoformat(),
+            "ts": now.isoformat(),
+            "ok": ok,
+            "detail": detail,
+        }), encoding="utf-8")
+    except Exception as exc:
+        log.error("scheduler.heartbeat_error", error=str(exc))
+
+
 def run_job(config_path: Path) -> None:
     """Execute one full signal scan — called by the scheduler or --run-now.
 
@@ -56,10 +76,15 @@ def run_job(config_path: Path) -> None:
     with open(config_path, "rb") as f:
         raw = tomllib.load(f)
 
-    if "router" in raw:
-        _run_job_routed(raw, config_path)
-    else:
-        _run_job_legacy_wheel(config_path)
+    try:
+        if "router" in raw:
+            _run_job_routed(raw, config_path)
+        else:
+            _run_job_legacy_wheel(config_path)
+        _write_heartbeat(ok=True)
+    except Exception as exc:
+        _write_heartbeat(ok=False, detail=str(exc))
+        raise
 
 
 def _run_exits(router_cfg: dict, executor) -> list:
