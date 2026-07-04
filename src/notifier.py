@@ -28,10 +28,12 @@ def send_summary(title: str, body: str) -> str:
     if topic:
         try:
             import requests
+            # HTTP headers must be latin-1; keep the title ASCII-safe
+            ascii_title = title.replace("—", "-").encode("ascii", "replace").decode("ascii")
             resp = requests.post(
                 f"https://ntfy.sh/{topic}",
                 data=body.encode("utf-8"),
-                headers={"Title": title},
+                headers={"Title": ascii_title},
                 timeout=15,
             )
             resp.raise_for_status()
