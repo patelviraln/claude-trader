@@ -44,3 +44,10 @@ state/
 
 # Ad-hoc test scan output
 signals_test.jsonl
+
+# Trading activity & account data — private, stays local
+signals.jsonl
+fills.jsonl
+positions.jsonl
+wheel_state.json
+iv_history/
