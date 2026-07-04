@@ -48,20 +48,7 @@ def run_signal(
         card.thesis_text = _gen(card, iv_history_dir=Path(iv_history_dir))
 
     if execute and executor is not None and card.legs:
-        try:
-            order = executor.place_order_from_card(card)
-            card.order_ids = [order["order_id"]]
-            card.order_statuses = [order["status"]]
-            logger.info(
-                "executor.order_placed",
-                ticker=ticker,
-                occ_symbol=order["occ_symbol"],
-                limit_price=order["limit_price"],
-                order_id=order["order_id"],
-                status=order["status"],
-            )
-        except Exception as exc:
-            logger.error("executor.order_failed", ticker=ticker, error=str(exc))
+        _execute_card(card, executor)
 
     if print_output:
         print_signal_card(card)
@@ -105,6 +92,44 @@ def _resolve_strategies(
                 built[name] = build_strategy(name, router_cfg)
         mapping[ticker] = built[name]
     return mapping
+
+
+def _execute_card(card: SignalCard, executor) -> None:
+    """Risk-gate then place the order(s) for one actionable card (Phase 10).
+
+    A rejected order is recorded on the card (risk_flags) but never raises —
+    a blocked trade must not take down the rest of the batch.
+    """
+    from src.order_executor import OrderIntent
+    from src.risk_manager import validate_order
+
+    decision = validate_order(card, executor)
+    card.max_contracts = decision.approved_qty
+    if not decision.approved:
+        card.risk_flags.append(f"risk_blocked: {decision.reason}")
+        logger.info("executor.order_blocked", ticker=card.ticker,
+                    signal_type=card.signal_type, reason=decision.reason)
+        return
+
+    # Apply risk-approved sizing (e.g. equity share count downsized to budget)
+    if card.legs and decision.approved_qty < card.legs[0].qty:
+        card.risk_flags.append(
+            f"risk_downsized: {card.legs[0].qty} -> {decision.approved_qty}")
+        card.legs[0].qty = decision.approved_qty
+
+    try:
+        results = executor.execute(OrderIntent(
+            strategy_name=card.strategy_name,
+            ticker=card.ticker,
+            legs=card.legs,
+        ))
+        card.order_ids = [r.order_id for r in results]
+        card.order_statuses = [r.status for r in results]
+        logger.info("executor.order_placed", ticker=card.ticker,
+                    signal_type=card.signal_type,
+                    order_ids=card.order_ids, statuses=card.order_statuses)
+    except Exception as exc:
+        logger.error("executor.order_failed", ticker=card.ticker, error=str(exc))
 
 
 def run_signals_batch(

@@ -47,6 +47,7 @@ class SignalCard(BaseModel):
     confidence_rationale: str = ""
     risk_flags: list[str] = Field(default_factory=list)
     no_signal_reason: str | None = None
+    max_contracts: int | None = None  # risk-approved quantity (Phase 10); None = not evaluated
     order_ids: list[str] = Field(default_factory=list)
     order_statuses: list[str] = Field(default_factory=list)
 

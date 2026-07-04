@@ -29,10 +29,21 @@ TLT  = "rsi2"
 GLD  = "rsi2"
 
 [scheduler]
-adapter    = "alpaca"
-run_hour   = 9
-run_minute = 35
-timezone   = "America/New_York"
+adapter      = "alpaca"
+run_hour     = 9
+run_minute   = 35
+timezone     = "America/New_York"
+# Phase 10: place paper orders automatically for actionable signals.
+# Every order is gated by [risk] first; set false to log signals only.
+auto_execute = true
+
+# Phase 10 — risk limits, enforced before EVERY order the system places
+[risk]
+enabled                  = true
+max_position_pct         = 5.0    # capital per new position, % of account equity
+max_positions_total      = 10     # max concurrent open positions
+max_positions_per_ticker = 1      # max concurrent positions per underlying
+min_buying_power_pct     = 20.0   # % of equity kept free after any new trade
 
 # Phase 9 — exit rules, evaluated on open short-option positions BEFORE new entries
 [exit_rules]
