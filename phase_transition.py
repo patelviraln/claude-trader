@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Phase transition CLI for the Wheel strategy state machine.
+Wheel mode transition CLI (Sell Put <-> Covered Call).
+
+Internally the modes are stored as phase "A" (Sell Put — no shares, selling
+cash-secured puts) and "B" (Covered Call — 100 shares held, selling calls).
 
 Commands:
-    assign  — put was assigned; move ticker from Phase A -> B
-    exit    — call was exercised or expired worthless; move ticker from Phase B -> A
+    assign  — put was assigned; move ticker from Sell Put -> Covered Call
+    exit    — call was exercised or expired worthless; move ticker back to Sell Put
 
 Usage:
     python phase_transition.py assign NVDA --cost-basis 880.50
@@ -41,7 +44,8 @@ def cmd_assign(args: argparse.Namespace) -> None:
             ticker=ticker,
             msg="Ticker is already in Phase B — no change made",
         )
-        print(f"[warn] {ticker} is already Phase B. Use 'exit' first if re-assigning.", file=sys.stderr)
+        print(f"[warn] {ticker} is already in Covered Call mode. Use 'exit' first if re-assigning.",
+              file=sys.stderr)
         return
 
     new_state = {
@@ -60,7 +64,7 @@ def cmd_assign(args: argparse.Namespace) -> None:
         assignment_date=new_state["assignment_date"],
     )
     print(
-        f"[ok] {ticker}: Phase A -> B  |  100 shares @ ${args.cost_basis:.2f}  "
+        f"[ok] {ticker}: Sell Put -> Covered Call  |  100 shares @ ${args.cost_basis:.2f}  "
         f"|  assigned {new_state['assignment_date']}"
     )
 
@@ -77,7 +81,7 @@ def cmd_exit(args: argparse.Namespace) -> None:
             ticker=ticker,
             msg="Ticker is already in Phase A — no change made",
         )
-        print(f"[warn] {ticker} is already Phase A.", file=sys.stderr)
+        print(f"[warn] {ticker} is already in Sell Put mode.", file=sys.stderr)
         return
 
     new_state = {
@@ -90,12 +94,12 @@ def cmd_exit(args: argparse.Namespace) -> None:
     }
     set_ticker_state(state_path, ticker, new_state)
     log.info("transition.exited", ticker=ticker)
-    print(f"[ok] {ticker}: Phase B -> A  |  shares cleared, ready to sell puts")
+    print(f"[ok] {ticker}: Covered Call -> Sell Put  |  shares cleared, ready to sell puts")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Wheel Strategy Phase Transition",
+        description="Wheel Mode Transition (Sell Put <-> Covered Call)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--state", default="wheel_state.json", help="Path to state JSON")
@@ -103,7 +107,7 @@ def main() -> None:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_assign = sub.add_parser("assign", help="Put assigned: Phase A -> B")
+    p_assign = sub.add_parser("assign", help="Put assigned: Sell Put -> Covered Call")
     p_assign.add_argument("ticker", help="Ticker symbol, e.g. NVDA")
     p_assign.add_argument(
         "--cost-basis",
@@ -112,7 +116,7 @@ def main() -> None:
         help="Assignment price per share (strike price)",
     )
 
-    p_exit = sub.add_parser("exit", help="Call exercised/expired: Phase B -> A")
+    p_exit = sub.add_parser("exit", help="Call exercised/expired: Covered Call -> Sell Put")
     p_exit.add_argument("ticker", help="Ticker symbol, e.g. NVDA")
 
     args = parser.parse_args()

@@ -43,6 +43,8 @@ CONFIG_PATH  = "config/wheel.toml"   # default strategy config (Wheel)
 ROUTER_PATH  = Path("config/strategies.toml")
 
 PHASE_COLORS  = {"A": "#58a6ff", "B": "#bc8cff"}
+# Wheel phases keep "A"/"B" internally (state files, filters); the UI shows names
+PHASE_LABELS  = {"A": "Sell Put", "B": "Covered Call"}
 SIGNAL_COLORS = {
     "SELL_PUT": "#3fb950", "SELL_CALL": "#bc8cff", "NO_SIGNAL": "#8b949e",
     "SELL_PUT_SPREAD": "#58a6ff", "BUY_EQUITY": "#79c0ff", "SELL_EQUITY": "#f85149",
@@ -209,7 +211,7 @@ def _dashboard_grid(strat_filter: str) -> None:
 
         with cols[i % 3]:
             phase_badge  = (
-                _badge(f"Phase {phase}", PHASE_COLORS.get(phase, "#8b949e"))
+                _badge(PHASE_LABELS.get(phase, phase), PHASE_COLORS.get(phase, "#8b949e"))
                 if strat == "wheel" else ""
             )
             sig_phase    = sig.get("signal_type", "—") if sig else "—"
@@ -286,26 +288,29 @@ def page_dashboard() -> None:
 
 @st.fragment
 def _phase_transition_fragment(ticker: str, phase: str) -> None:
-    st.subheader("Phase Transition")
+    st.subheader("Wheel Mode")
+    st.caption("Sell Put mode sells cash-secured puts; assignment moves the ticker to "
+               "Covered Call mode (100 shares held). The scheduler also detects this "
+               "automatically from live positions.")
     if phase == "A":
         with st.form("assign_form"):
             cost = st.number_input("Cost basis (assignment price per share)", min_value=0.01, step=0.01)
-            if st.form_submit_button("Record Assignment  (A → B)", type="primary"):
+            if st.form_submit_button("Record Assignment  (Sell Put → Covered Call)", type="primary"):
                 set_ticker_state(STATE_PATH, ticker, {
                     "phase": "B", "shares_held": 100,
                     "cost_basis": round(cost, 4),
                     "assignment_date": date.today().isoformat(),
                     "open_put_strike": None, "open_put_expiry": None,
                 })
-                st.toast(f"{ticker} moved to Phase B @ ${cost:.2f}", icon="✅")
+                st.toast(f"{ticker} now in Covered Call mode @ ${cost:.2f}", icon="✅")
                 st.rerun(scope="app")  # stats row lives outside this fragment
     else:
-        if st.button("Record Exit  (B → A)", type="secondary"):
+        if st.button("Record Exit  (Covered Call → Sell Put)", type="secondary"):
             set_ticker_state(STATE_PATH, ticker, {
                 "phase": "A", "shares_held": 0, "cost_basis": None,
                 "assignment_date": None, "open_put_strike": None, "open_put_expiry": None,
             })
-            st.toast(f"{ticker} moved back to Phase A", icon="✅")
+            st.toast(f"{ticker} back in Sell Put mode", icon="✅")
             st.rerun(scope="app")
 
 
@@ -331,7 +336,7 @@ def page_ticker_detail() -> None:
     phase = state.get("phase", "A")
     c1, c2, c3, c4, c5 = st.columns(5)
     if strat == "wheel":
-        c1.metric("Phase",       phase)
+        c1.metric("Mode",        PHASE_LABELS.get(phase, phase))
         c2.metric("Shares Held", state.get("shares_held", 0))
         if state.get("cost_basis"):
             c3.metric("Cost Basis", f"${state['cost_basis']:.2f}")
@@ -862,7 +867,7 @@ def page_backtest() -> None:
         end     = col4.date_input("End date",   value=date(2024, 12, 31))
         phase   = None
         if bt_strategy == "wheel":
-            phase = st.radio("Phase", ["A — Sell Put", "B — Sell Call"], horizontal=True)
+            phase = st.radio("Mode", ["Sell Put", "Covered Call"], horizontal=True)
         run     = st.form_submit_button("Run Backtest", type="primary")
 
     if not run:
@@ -876,7 +881,7 @@ def page_backtest() -> None:
                 from src.backtester import BacktestEngine
                 wheel_cfg = _load_toml(CONFIG_PATH).get("wheel", {})
                 engine  = BacktestEngine(data_adapter, {"wheel": wheel_cfg})
-                summary = engine.run(ticker, start, end, phase="A" if phase.startswith("A") else "B")
+                summary = engine.run(ticker, start, end, phase="A" if phase == "Sell Put" else "B")
 
                 m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Total trades",    summary.total_trades)
@@ -1256,7 +1261,7 @@ def _config_tickers_tab() -> None:
         for t, s in sorted(states.items()):
             rows.append({
                 "Ticker":          t,
-                "Phase":           s.get("phase", "A"),
+                "Mode":            PHASE_LABELS.get(s.get("phase", "A"), s.get("phase", "A")),
                 "Shares":          s.get("shares_held", 0),
                 "Cost Basis":      s.get("cost_basis"),
                 "Assignment Date": s.get("assignment_date") or "—",
@@ -1278,7 +1283,9 @@ def _config_tickers_tab() -> None:
         st.markdown("**Add Ticker**")
         with st.form("add_ticker_form"):
             new_ticker = st.text_input("Symbol (e.g. TSLA)").upper().strip()
-            new_phase  = st.radio("Starting Phase", ["A", "B"], horizontal=True)
+            new_mode   = st.radio("Starting Mode", ["Sell Put", "Covered Call"], horizontal=True,
+                                  help="Covered Call = you already hold 100 shares")
+            new_phase  = "A" if new_mode == "Sell Put" else "B"
             cost_basis = None
             if new_phase == "B":
                 cost_basis = st.number_input("Cost Basis", min_value=0.01, step=0.01)
@@ -1295,7 +1302,7 @@ def _config_tickers_tab() -> None:
                         "open_put_strike": None, "open_put_expiry": None,
                     }
                     set_ticker_state(STATE_PATH, new_ticker, entry)
-                    st.toast(f"Added {new_ticker} (Phase {new_phase})", icon="✅")
+                    st.toast(f"Added {new_ticker} ({new_mode})", icon="✅")
                     st.rerun(scope="fragment")
 
     with col_remove:
