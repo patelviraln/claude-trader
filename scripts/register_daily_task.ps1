@@ -23,7 +23,10 @@ if ($Remove) {
     exit 0
 }
 
-$Python = (Get-Command python).Source
+# Resolve the real interpreter (sys.executable), not the WindowsApps alias shim,
+# so the task uses the environment where the project's dependencies are installed.
+$Python = (& python -c "import sys; print(sys.executable)").Trim()
+if (-not (Test-Path $Python)) { $Python = (Get-Command python).Source }
 $Command = "cmd /c cd /d `"$RepoRoot`" && `"$Python`" scheduler.py --run-now >> logs\scheduler_runs.log 2>&1"
 
 New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot "logs") | Out-Null
@@ -31,7 +34,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot "logs") | Out-Nul
 schtasks /create /f /tn $TaskName /sc weekly /d MON,TUE,WED,THU,FRI /st $Time /tr $Command
 
 Write-Host ""
-Write-Host "Registered '$TaskName' — Mon-Fri at $Time local time."
+Write-Host "Registered '$TaskName' - Mon-Fri at $Time local time."
 Write-Host "NOTE: $Time local should equal 9:35 AM New York. Re-run with -Time when"
 Write-Host "US daylight saving shifts relative to your timezone."
 Write-Host "Output: $RepoRoot\logs\scheduler_runs.log"

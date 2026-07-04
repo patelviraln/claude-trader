@@ -149,6 +149,11 @@ class TestRunJob:
 # ---------------------------------------------------------------------------
 
 class TestRunJobRouted:
+    @pytest.fixture(autouse=True)
+    def _no_real_notifications(self):
+        """Keep test runs from appending summaries to the real logs/daily_summary.md."""
+        with patch("src.notifier.send_summary"):
+            yield
     def test_dispatches_each_ticker_with_its_strategy(self, tmp_path):
         cfg = _write_router_toml(tmp_path, {"AAPL": "wheel", "NVDA": "wheel", "TLT": "rsi2"})
         mock_card = MagicMock()
