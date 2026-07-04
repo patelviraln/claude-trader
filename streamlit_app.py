@@ -7,6 +7,7 @@ Run:
 """
 from __future__ import annotations
 
+import re
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -180,6 +181,15 @@ def _strategy_badge(strat: str) -> str:
     return _badge(strat.replace("_", " "), STRATEGY_COLORS.get(strat, "#8b949e"))
 
 
+_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+
+def _valid_ticker(ticker: str) -> bool:
+    """Ticker symbols only — they flow into file paths (iv_history/{t}.jsonl)
+    and unsafe_allow_html markdown, so arbitrary strings are not acceptable."""
+    return bool(_TICKER_RE.fullmatch(ticker))
+
+
 # ---------------------------------------------------------------------------
 # Page: Dashboard
 # ---------------------------------------------------------------------------
@@ -262,7 +272,7 @@ def _dashboard_grid(strat_filter: str) -> None:
                         detail += f"{' · ' if detail else ''}Order {_order_ids[0][:8]}…"
                     elif state.get("cost_basis"):
                         detail += f"{' · ' if detail else ''}Basis ${state['cost_basis']:.2f}"
-                    st.caption(detail or sig.get("no_signal_reason", "")[:70] or "—")
+                    st.caption(detail or (sig.get("no_signal_reason") or "")[:70] or "—")
                 else:
                     st.markdown("<span style='color:#8b949e'>—</span>", unsafe_allow_html=True)
                     st.caption("No signals yet")
@@ -567,6 +577,14 @@ def _get_executor():
     return AlpacaOrderExecutor()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _realized_pnl_cached(router_mtime: float) -> dict:
+    """Fill-ledger sync hits the orders API (500 rows) — cap it at once a minute,
+    not once per fragment rerun (30s auto-refresh would double the call rate)."""
+    from src.pnl_ledger import realized_pnl_summary
+    return realized_pnl_summary(_get_executor(), _router_cfg() or None)
+
+
 def _positions_body() -> None:
     from src.exit_engine import evaluate_position, load_exit_rules
     from src.positions import fetch_positions, load_position_events
@@ -685,8 +703,7 @@ def _positions_body() -> None:
     # --- Performance (realized P&L from fill ledger) ---
     st.subheader("Performance — Realized P&L")
     try:
-        from src.pnl_ledger import realized_pnl_summary
-        realized = realized_pnl_summary(executor, _router_cfg() or None)
+        realized = _realized_pnl_cached(_mtime(ROUTER_PATH))
         p1, p2 = st.columns([1, 3])
         p1.metric("Total Realized", f"${realized['total']:,.2f}")
         if realized["by_strategy"]:
@@ -954,8 +971,14 @@ def page_backtest() -> None:
                         st.warning("RSI(2) needs ≥ 220 bars of history (200-day SMA warm-up) — "
                                    "widen the date range.")
                         return
-                    from src.router import build_strategy
-                    strategy = build_strategy("rsi2", _router_cfg())
+                    router_cfg = _router_cfg()
+                    if router_cfg:
+                        from src.router import build_strategy
+                        strategy = build_strategy("rsi2", router_cfg)
+                    else:  # no strategies.toml — load the strategy config directly
+                        from src.strategies.momentum.rsi2 import RSI2Strategy
+                        strategy = RSI2Strategy()
+                        strategy.load_config(_load_toml("config/rsi2.toml").get("rsi2", {}))
                     trades = _backtest_rsi2(strategy, hist, ticker)
                 else:  # put_credit_spread
                     trades = _backtest_pcs(hist, ticker)
@@ -1000,6 +1023,8 @@ def _config_router_tab() -> None:
             if st.form_submit_button("Save Assignment", type="primary"):
                 if not r_ticker:
                     st.warning("Enter a ticker symbol.")
+                elif not _valid_ticker(r_ticker):
+                    st.warning(f"'{r_ticker}' is not a valid ticker symbol.")
                 else:
                     router_cfg.setdefault("router", {}).setdefault("assignments", {})[r_ticker] = r_strat
                     _save_router_cfg(router_cfg)
@@ -1252,12 +1277,13 @@ def _config_scheduler_tab() -> None:
         timezone   = st.text_input("Timezone", value=sched.get("timezone", "America/New_York"))
 
         if st.form_submit_button("Save Scheduler Settings", type="primary"):
-            new_sched = {
-                "adapter":    adapter,
-                "run_hour":   run_hour,
-                "run_minute": run_minute,
-                "timezone":   timezone,
-            }
+            # Merge into the existing section — rebuilding it from scratch would
+            # silently wipe keys owned by other tabs (e.g. auto_execute)
+            new_sched = {**sched,
+                         "adapter":    adapter,
+                         "run_hour":   run_hour,
+                         "run_minute": run_minute,
+                         "timezone":   timezone}
             if not routed:
                 new_sched["tickers"] = sched_tickers
             cfg["scheduler"] = new_sched
@@ -1309,6 +1335,8 @@ def _config_tickers_tab() -> None:
             if st.form_submit_button("Add Ticker", type="primary"):
                 if not new_ticker:
                     st.warning("Enter a ticker symbol.")
+                elif not _valid_ticker(new_ticker):
+                    st.warning(f"'{new_ticker}' is not a valid ticker symbol.")
                 elif new_ticker in states:
                     st.warning(f"{new_ticker} is already tracked.")
                 else:

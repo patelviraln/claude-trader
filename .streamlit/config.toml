@@ -7,6 +7,9 @@ textColor       = "#e6edf3"
 
 [server]
 headless = true
+# Bind to loopback only — the dashboard can place/close paper orders, so it
+# must not be reachable from the network. Remove this line only deliberately.
+address = "127.0.0.1"
 
 [client]
 toolbarMode = "minimal"
