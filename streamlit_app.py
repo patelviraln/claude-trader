@@ -185,6 +185,11 @@ def _strategy_badge(strat: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Every card renders exactly: header, stat line, caption, button — this height
+# fits that content with room to spare, so no card ever shows a scrollbar.
+CARD_HEIGHT = 205
+
+
 def _dashboard_grid(strat_filter: str) -> None:
     states     = states_data()
     records    = signals_data()
@@ -201,8 +206,6 @@ def _dashboard_grid(strat_filter: str) -> None:
         if not tickers:
             st.info(f"No tickers currently on **{strat_filter}**.")
             return
-
-    CARD_HEIGHT = 330  # uniform card height keeps every grid row aligned
 
     for row_start in range(0, len(tickers), 3):
         row_cols = st.columns(3, gap="medium")
@@ -222,40 +225,47 @@ def _dashboard_grid(strat_filter: str) -> None:
                 signal_badge = _badge(sig_phase.replace("_", " "), sig_color) if sig else ""
 
                 st.markdown(
-                    f"### {ticker} &nbsp; {_strategy_badge(strat)} &nbsp; {phase_badge} &nbsp; {signal_badge}",
+                    f"#### {ticker} &nbsp; {_strategy_badge(strat)} &nbsp; {phase_badge} &nbsp; {signal_badge}",
                     unsafe_allow_html=True,
                 )
 
+                # One compact stat line + one detail line — fixed content height,
+                # so the fixed-height container never needs a scrollbar.
                 if sig:
-                    c1, c2 = st.columns(2)
                     _legs = sig.get("legs") or []
                     _leg0 = _legs[0] if _legs else {}
                     _payload = sig.get("payload") or {}
-                    c1.metric("Price",      f"${sig.get('underlying_price', 0):.2f}")
-                    _mid = _leg0.get("limit_price")
                     _is_equity = _leg0.get("asset_class") == "equity"
-                    c1.metric("Limit" if _is_equity else "Option Mid", f"${_mid:.2f}" if _mid else "—")
-                    if _is_equity:
-                        c2.metric("Shares", _leg0.get("qty", 0))
-                    else:
-                        iv = _payload.get("iv_rank")
-                        c2.metric("IV Rank", f"{iv:.1f}%" if iv is not None else "—")
-                    tier = sig.get("confidence_tier")
-                    if tier:
-                        c2.markdown(_badge(tier, TIER_COLORS.get(tier, "#8b949e")), unsafe_allow_html=True)
-                    if _leg0.get("strike"):
-                        st.caption(f"Strike ${_leg0['strike']:.2f}  ·  Expiry {_leg0.get('expiry','—')}  ·  DTE {_payload.get('dte','—')}")
-                    elif _is_equity and (sig.get("indicators") or {}).get("rsi2") is not None:
-                        st.caption(f"RSI(2) {sig['indicators']['rsi2']:.1f}  ·  SMA200 ${sig['indicators'].get('sma200') or 0:.2f}")
-                    _order_ids = sig.get("order_ids") or []
-                    _order_sts = sig.get("order_statuses") or []
-                    if _order_ids:
-                        st.caption(f"Order: {_order_ids[0][:12]}…  [{_order_sts[0] if _order_sts else '—'}]")
-                else:
-                    st.caption("No signals yet")
+                    _mid = _leg0.get("limit_price")
 
-                if state.get("cost_basis"):
-                    st.caption(f"Cost basis ${state['cost_basis']:.2f}  ·  {state.get('assignment_date','')}")
+                    parts = [f"<b style='font-size:1.1rem'>${sig.get('underlying_price', 0):,.2f}</b>"]
+                    if _mid:
+                        parts.append(f"{'Limit' if _is_equity else 'Mid'} ${_mid:.2f}")
+                    if _is_equity:
+                        parts.append(f"{_leg0.get('qty', 0)} sh")
+                    elif (_payload.get("iv_rank")) is not None:
+                        parts.append(f"IV {_payload['iv_rank']:.0f}%")
+                    tier = sig.get("confidence_tier")
+                    tier_html = f" {_badge(tier, TIER_COLORS.get(tier, '#8b949e'))}" if tier else ""
+                    st.markdown(
+                        f"<span style='color:#8b949e'>{' · '.join(parts)}</span>{tier_html}",
+                        unsafe_allow_html=True,
+                    )
+
+                    detail = ""
+                    if _leg0.get("strike"):
+                        detail = f"Strike ${_leg0['strike']:.2f} · {_leg0.get('expiry', '—')} · DTE {_payload.get('dte', '—')}"
+                    elif _is_equity and (sig.get("indicators") or {}).get("rsi2") is not None:
+                        detail = f"RSI(2) {sig['indicators']['rsi2']:.1f} · SMA200 ${sig['indicators'].get('sma200') or 0:.2f}"
+                    _order_ids = sig.get("order_ids") or []
+                    if _order_ids:
+                        detail += f"{' · ' if detail else ''}Order {_order_ids[0][:8]}…"
+                    elif state.get("cost_basis"):
+                        detail += f"{' · ' if detail else ''}Basis ${state['cost_basis']:.2f}"
+                    st.caption(detail or sig.get("no_signal_reason", "")[:70] or "—")
+                else:
+                    st.markdown("<span style='color:#8b949e'>—</span>", unsafe_allow_html=True)
+                    st.caption("No signals yet")
 
                 if st.button("View Details", key=f"detail_{ticker}", use_container_width=True):
                     st.session_state["_detail_ticker"] = ticker
