@@ -322,12 +322,16 @@ def _make_future_ohlcv(start_price: float, n: int = 60) -> pd.DataFrame:
 
 class TestPCSSimulateTrade:
     def _make_card(self, short: float, long: float, credit: float):
+        from datetime import datetime, timezone
         from src.signal_output import Leg, SignalCard
         return SignalCard(
             strategy_name="put_credit_spread",
             ticker="SPY",
             signal_type="SELL_PUT_SPREAD",
             underlying_price=100.0,
+            # Pinned inside the _make_future_ohlcv window — the wall-clock
+            # default makes entry+DTE overrun the fixture as time advances.
+            signal_timestamp=datetime(2026, 5, 19, tzinfo=timezone.utc),
             legs=[
                 Leg(asset_class="option", symbol="SPY", side="sell", qty=1,
                     strike=short, expiry="2026-07-18", option_type="put",

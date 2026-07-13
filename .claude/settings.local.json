@@ -34,7 +34,15 @@
       "PowerShell(python -c \"from dotenv import dotenv_values; v = dotenv_values\\(r'C:\\\\Users\\\\patel\\\\claude-trader\\\\.env'\\); [print\\(k, 'len=', len\\(\\(v.get\\(k\\) or ''\\).strip\\(\\)\\)\\) for k in \\('ALPACA_API_KEY','ALPACA_SECRET_KEY','OPENROUTER_API_KEY'\\)]\")",
       "PowerShell(python -c \"from dotenv import load_dotenv; load_dotenv\\(\\); from src.adapters.alpaca_adapter import AlpacaPaperAdapter; a = AlpacaPaperAdapter\\(\\); df = a.get_ohlcv\\('AAPL', bars=5\\); print\\('OK — got', len\\(df\\), 'bars, last close', float\\(df['close'].iloc[-1]\\)\\)\")",
       "Bash(git push *)",
-      "Bash(git fetch *)"
+      "Bash(git fetch *)",
+      "Bash(python -m pytest tests/unit/test_earnings.py -q)",
+      "Bash(python -m pytest tests/unit/test_attribution.py -q)",
+      "Bash(python -X utf8 -c ' *)",
+      "Bash(python *)",
+      "Bash(git -C C:/Users/patel/claude-trader stash -u -q)",
+      "Bash(git -C C:/Users/patel/claude-trader stash pop -q)",
+      "Bash(git -C C:/Users/patel/claude-trader status --short)",
+      "Bash(git commit -q -m 'feat: red_day_csp strategy — sentiment-dip put selling \\(ported from red-day-sentiment-scanner skill\\) *)"
     ]
   }
 }

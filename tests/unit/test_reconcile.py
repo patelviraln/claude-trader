@@ -13,7 +13,8 @@ from src.state_store import get_strategy_state, get_ticker_state
 ROUTER_CFG = {
     "router": {
         "default_strategy": "wheel",
-        "assignments": {"NVDA": "wheel", "SPY": "put_credit_spread", "TLT": "rsi2"},
+        "assignments": {"NVDA": "wheel", "SPY": "put_credit_spread", "TLT": "rsi2",
+                        "AMD": "red_day_csp"},
     }
 }
 
@@ -139,6 +140,47 @@ class TestPcsSync:
                                   state_base=paths["base"])
         state = get_strategy_state("put_credit_spread", "SPY", paths["base"])
         assert state["open_spread"] is False
+
+
+class TestRedDaySync:
+    def test_short_put_recorded(self, paths):
+        changes = sync_state_from_positions(
+            [_option("AMD", "short", 155.0, "2026-08-21", entry=3.1)], ROUTER_CFG,
+            wheel_state_path=paths["wheel"], state_base=paths["base"])
+        state = get_strategy_state("red_day_csp", "AMD", paths["base"])
+        assert state["open_put_strike"] == 155.0
+        assert state["open_put_expiry"] == "2026-08-21"
+        assert any(c["ticker"] == "AMD" for c in changes)
+
+    def test_put_closed_clears_state(self, paths):
+        sync_state_from_positions([_option("AMD", "short", 155.0, "2026-08-21")],
+                                  ROUTER_CFG, wheel_state_path=paths["wheel"],
+                                  state_base=paths["base"])
+        sync_state_from_positions([], ROUTER_CFG, wheel_state_path=paths["wheel"],
+                                  state_base=paths["base"])
+        state = get_strategy_state("red_day_csp", "AMD", paths["base"])
+        assert state["open_put_strike"] is None
+
+    def test_in_sync_untouched(self, paths):
+        pos = [_option("AMD", "short", 155.0, "2026-08-21")]
+        sync_state_from_positions(pos, ROUTER_CFG, wheel_state_path=paths["wheel"],
+                                  state_base=paths["base"])
+        changes = sync_state_from_positions(pos, ROUTER_CFG,
+                                            wheel_state_path=paths["wheel"],
+                                            state_base=paths["base"])
+        assert changes == []
+
+    def test_synced_state_blocks_reentry(self, paths):
+        """Reconciled open put must trip the OpenPositionGateFilter."""
+        from src.strategies.red_day.filters import OpenPositionGateFilter
+        from src.strategies.red_day.state import RedDayState
+        sync_state_from_positions([_option("AMD", "short", 155.0, "2026-08-21")],
+                                  ROUTER_CFG, wheel_state_path=paths["wheel"],
+                                  state_base=paths["base"])
+        state = RedDayState.from_dict(
+            get_strategy_state("red_day_csp", "AMD", paths["base"]))
+        r = OpenPositionGateFilter().run({"ticker": "AMD"}, state, {})
+        assert not r.passed and r.hard_stop
 
 
 class TestDuplicateEntryGuard:

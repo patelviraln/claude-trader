@@ -2,13 +2,14 @@
 
 A personal AI-assisted **multi-strategy paper trading system** for US equities and options. It scans daily, places paper orders via Alpaca, tracks open positions with live P&L, closes them by rule, records realized P&L per strategy, and reports to you — all from a Streamlit dashboard and a single daily scheduler run.
 
-**Three strategies, one router:**
+**Four strategies, one router:**
 
 | Strategy | Trade | Signal types |
 |---|---|---|
 | `wheel` | Cash-secured puts → covered calls after assignment | `SELL_PUT`, `SELL_CALL` |
 | `put_credit_spread` | Defined-risk bull put spreads (~0.30Δ short / ~0.15Δ long) | `SELL_PUT_SPREAD` |
 | `rsi2` | Connors RSI(2) mean-reversion on ETFs, long-only above the 200-DMA | `BUY_EQUITY`, `SELL_EQUITY` |
+| `red_day_csp` | Cash-secured puts (~0.22Δ) on red days where the dip is sentiment/market drag, not a fundamental break | `SELL_PUT` |
 
 `config/strategies.toml` maps each ticker to its strategy; unassigned tickers fall back to the default.
 
@@ -57,7 +58,7 @@ cp .env.example .env
 
 Fixture-only mode (`--adapter fixture`) needs **no keys**.
 
-Configs: `config/strategies.toml` (router, scheduler, exit rules), `config/wheel.toml`, `config/put_credit_spread.toml`, `config/rsi2.toml` — all editable from the dashboard's Configuration page.
+Configs: `config/strategies.toml` (router, scheduler, exit rules), `config/wheel.toml`, `config/put_credit_spread.toml`, `config/rsi2.toml`, `config/red_day_csp.toml` — all editable from the dashboard's Configuration page.
 
 ---
 
@@ -127,7 +128,7 @@ python run_signals.py --tickers NVDA --adapter alpaca --thesis    # AI thesis vi
 ```
 --tickers       One or more ticker symbols (required)
 --adapter       fixture | alpaca  (default: fixture)
---strategy      wheel | put_credit_spread | rsi2 — omit to auto-route via strategies.toml
+--strategy      wheel | put_credit_spread | rsi2 | red_day_csp — omit to auto-route via strategies.toml
 --phase         A | B — override wheel mode for all tickers this run
 --config        Path to wheel config (default: config/wheel.toml)
 --state         Path to wheel state (default: wheel_state.json)
@@ -153,8 +154,8 @@ Six pages (`st.navigation`, per-page URLs, mtime-cached data layer, fragment-iso
 | **Positions** | Account panel (equity, cash, buying power), live open positions with unrealized P&L, DTE, % of max profit, exit-rule status, manual Close button, **realized P&L per strategy** from the fill ledger, position event feed, state-sync button. |
 | **Ticker Detail** | Strategy badge, per-strategy state metrics, IV history chart (options strategies), signal history table, Wheel Mode transition form. |
 | **Run Signals** | Strategy selector (auto-route or forced), adapter choice, scan + optional paper orders / thesis from the UI. |
-| **Backtest** | All three strategies: wheel walk-forward (BS pricing), RSI(2) rolling-window walk-forward, simplified PCS spread simulation. Equity curve + trade table. |
-| **Configuration** | Per-strategy parameter editors (wheel / PCS / RSI2 TOMLs), **Router** tab (ticker → strategy assignments), scheduler settings, tracked-ticker management. |
+| **Backtest** | Wheel walk-forward (BS pricing), RSI(2) rolling-window walk-forward, simplified PCS spread simulation. Equity curve + trade table. (`red_day_csp` is excluded — no historical news feed to replay; the paper account is its test.) |
+| **Configuration** | Per-strategy parameter editors (wheel / PCS / RSI2 / Red-Day CSP TOMLs), **Router** tab (ticker → strategy assignments), scheduler settings, tracked-ticker management. |
 
 ---
 
@@ -211,6 +212,8 @@ Confidence tiers: **HIGH** (clean pass), **MEDIUM** (1 soft flag / imprecise del
 
 **RSI(2)** (4): Position gate → close > SMA(200) → RSI(2) < 10 → position sizer (5% of equity). Exits: RSI(2) > 70 or 5-day max hold.
 
+**Red-Day CSP** (8): Open-position gate → dip trigger (per-name threshold, default −2%) → beta residual vs SPY/sector ETF (tags SYMPATHY / MIXED / IDIOSYNCRATIC) → earnings gate (expiry must clear a 14-day buffer; unknown date blocks; FOMC/CPI blackout list) → options chain → IV rank ≥ 30 → **news attribution** (Alpaca headlines classified by LLM: `FUNDAMENTAL_BREAK`/`EVENT_PENDING` reject, `TRANSIENT` passes, `NO_NEWS` passes only on SYMPATHY) → ±0.22Δ strike. The core question: *is this dip a discount or a warning?*
+
 All filters implement `run(market_data, state, config) → FilterResult` (`src/strategies/base.py`).
 
 ---
@@ -224,7 +227,7 @@ All filters implement `run(market_data, state, config) → FilterResult` (`src/s
 ## Tests
 
 ```bash
-pytest    # 337 tests
+pytest    # 447 tests
 ```
 
 Coverage spans: all strategy filter chains and signal emission (wheel / PCS / RSI2), the router, per-strategy state store, reconciliation (fill→state sync, assignment detection, duplicate-entry guard), exit engine (all three rules, close+log flow), positions (OCC parsing, P&L math, event log), fill ledger (round-trip realized P&L, dedupe), order executor (single-leg, multi-leg, equity), adapters (mocked Alpaca SDK), backtesters, scheduler dispatch (routed + legacy), thesis generator (mocked HTTP), and the dashboard data layer.
@@ -241,7 +244,7 @@ claude-trader/
 ├── phase_transition.py         # wheel mode CLI (Sell Put <-> Covered Call)
 ├── config/
 │   ├── strategies.toml         # router assignments + scheduler + exit rules
-│   ├── wheel.toml / put_credit_spread.toml / rsi2.toml
+│   ├── wheel.toml / put_credit_spread.toml / rsi2.toml / red_day_csp.toml
 ├── scripts/
 │   ├── register_daily_task.ps1 # Windows Task Scheduler registration
 │   └── migrate_*.py
@@ -258,14 +261,17 @@ claude-trader/
 │   ├── notifier.py             # daily summary (ntfy.sh push or file)
 │   ├── order_executor.py       # OrderIntent execute(), positions, account, close
 │   ├── thesis_generator.py     # OpenRouter thesis (env-driven models)
+│   ├── attribution.py          # red-day dip attribution (Alpaca news + LLM)
+│   ├── earnings.py             # next-earnings lookup (yfinance, cached)
 │   ├── backtester.py / indicator_engine.py / iv_history.py / state_store.py
 │   ├── adapters/               # DataAdapter Protocol: fixture + Alpaca (IEX)
 │   └── strategies/
 │       ├── base.py / registry.py
 │       ├── wheel/              # filters, state, strategy, BS backtester
 │       ├── spreads/            # PutCreditSpreadStrategy
-│       └── momentum/           # RSI2Strategy
-└── tests/                      # 337 tests (unit + integration)
+│       ├── momentum/           # RSI2Strategy
+│       └── red_day/            # RedDayCSPStrategy (sentiment-dip put selling)
+└── tests/                      # 447 tests (unit + integration)
 ```
 
 ---
@@ -282,7 +288,8 @@ claude-trader/
 | Phase 9 — exit rules (50% PT / 21 DTE / 2× SL) | ✅ |
 | Loop hardening — reconciliation, realized P&L ledger, daily summary, task scheduling | ✅ |
 | Phase 10 — risk management, position sizing, risk-gated auto-execution | ✅ |
-| Phase 11 — event/calendar awareness (earnings, FOMC, ex-div) | next |
+| `red_day_csp` strategy — sentiment-dip CSPs with news attribution, earnings gate, beta residual | ✅ |
+| Phase 11 — event/calendar awareness for the remaining strategies (earnings gate exists in `red_day_csp`; extend to wheel/PCS) | next |
 | Phase 13 — generic multi-strategy backtest engine with capital constraints | planned |
 | Phase 14 — full notifications; Phase 16 — production infra; Phase 17 — live trading harness | planned |
 

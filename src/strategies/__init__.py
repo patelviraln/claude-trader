@@ -2,3 +2,4 @@
 from src.strategies.wheel import strategy as _wheel  # noqa: F401
 from src.strategies.spreads import strategy as _spreads  # noqa: F401
 from src.strategies.momentum import rsi2 as _rsi2  # noqa: F401
+from src.strategies.red_day import strategy as _red_day  # noqa: F401

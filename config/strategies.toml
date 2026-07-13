@@ -28,6 +28,11 @@ EFA  = "rsi2"
 TLT  = "rsi2"
 GLD  = "rsi2"
 
+# Red-Day CSP — sell puts on sentiment dips, reject fundamental breaks
+AMD  = "red_day_csp"
+AVGO = "red_day_csp"
+ORCL = "red_day_csp"
+
 [scheduler]
 adapter      = "alpaca"
 run_hour     = 9
@@ -60,3 +65,6 @@ config_path = "config/put_credit_spread.toml"
 
 [strategies.rsi2]
 config_path = "config/rsi2.toml"
+
+[strategies.red_day_csp]
+config_path = "config/red_day_csp.toml"

@@ -50,6 +50,9 @@ Strategies you may see:
   ~0.15-delta put at the same expiry for a defined-risk net credit.
 - rsi2 (BUY_EQUITY / SELL_EQUITY): Connors RSI(2) mean-reversion — buys
   oversold dips above the 200-day SMA, exits on RSI recovery or max hold.
+- red_day_csp (SELL_PUT): sells ~0.22-delta cash-secured puts on red days
+  where the dip is sentiment/market drag (news attribution found no
+  fundamental break, no earnings inside the window, IV rank elevated).
 
 Signals only fire after the strategy's full technical filter chain passes
 (trend, momentum, volatility, and liquidity gates as applicable).

@@ -6,10 +6,11 @@ Without this the loop double-enters: an RSI2 buy fills but state/rsi2.json
 still says flat, so the next scan emits another BUY_EQUITY. Reconciliation
 derives the truth from open positions:
 
-  rsi2   — long equity on an rsi2-routed ticker  → in_position/shares/entry
-  pcs    — short+long put pair on a pcs ticker   → open_spread + strikes
-  wheel  — short put → open_put_strike/expiry; >=100 long shares → Phase B
-           (assignment detected); neither → Phase A flat
+  rsi2    — long equity on an rsi2-routed ticker  → in_position/shares/entry
+  pcs     — short+long put pair on a pcs ticker   → open_spread + strikes
+  red_day — short put on a red_day_csp ticker     → open_put_strike/expiry
+  wheel   — short put → open_put_strike/expiry; >=100 long shares → Phase B
+            (assignment detected); neither → Phase A flat
 
 Run automatically by the scheduler (after exits, before entries) and on
 demand from the dashboard Positions page.
@@ -101,6 +102,33 @@ def _sync_pcs(
     return {"strategy": "put_credit_spread", "ticker": ticker, "state": new_state}
 
 
+def _sync_red_day(
+    ticker: str,
+    held: list[Position],
+    state_base: Path,
+) -> dict[str, Any] | None:
+    current = get_strategy_state("red_day_csp", ticker, state_base)
+    short_puts = [p for p in held if p.option_type == "put" and p.side == "short"]
+
+    if short_puts:
+        sp = short_puts[0]
+        if current.get("open_put_strike") == sp.strike:
+            return None  # already in sync
+        new_state = {
+            "open_put_strike": sp.strike,
+            "open_put_expiry": sp.expiry,
+            "entry_date": current.get("entry_date") or date.today().isoformat(),
+        }
+    else:
+        if not current.get("open_put_strike"):
+            return None
+        new_state = {"open_put_strike": None, "open_put_expiry": None,
+                     "entry_date": None}
+
+    set_strategy_state("red_day_csp", ticker, new_state, state_base)
+    return {"strategy": "red_day_csp", "ticker": ticker, "state": new_state}
+
+
 def _sync_wheel(
     ticker: str,
     held: list[Position],
@@ -174,6 +202,8 @@ def sync_state_from_positions(
                 change = _sync_rsi2(ticker, held, state_base)
             elif strategy == "put_credit_spread":
                 change = _sync_pcs(ticker, held, state_base)
+            elif strategy == "red_day_csp":
+                change = _sync_red_day(ticker, held, state_base)
             elif strategy == "wheel":
                 change = _sync_wheel(ticker, held, wheel_state_path)
             else:

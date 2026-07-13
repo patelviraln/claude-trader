@@ -51,7 +51,8 @@ SIGNAL_COLORS = {
     "SELL_PUT_SPREAD": "#58a6ff", "BUY_EQUITY": "#79c0ff", "SELL_EQUITY": "#f85149",
 }
 TIER_COLORS   = {"HIGH": "#3fb950", "MEDIUM": "#d29922", "LOW": "#f85149"}
-STRATEGY_COLORS = {"wheel": "#58a6ff", "put_credit_spread": "#bc8cff", "rsi2": "#3fb950"}
+STRATEGY_COLORS = {"wheel": "#58a6ff", "put_credit_spread": "#bc8cff", "rsi2": "#3fb950",
+                   "red_day_csp": "#f85149"}
 
 FIXTURES_DIR = Path("fixtures")
 
@@ -878,6 +879,14 @@ def page_backtest() -> None:
     elif bt_strategy == "put_credit_spread":
         st.caption("Simplified walk-forward: 5%/10%-OTM put spread whenever flat, "
                    "BS-priced entry credit from realized vol.")
+    elif bt_strategy == "red_day_csp":
+        st.info(
+            "Red-Day CSP can't be backtested honestly — entries depend on live news "
+            "attribution and there is no historical news feed to replay. The paper "
+            "account is the real test: realized P&L accrues per-strategy on the "
+            "Positions page."
+        )
+        return
     else:
         st.caption("Walk-forward RSI(2): real entry signals on rolling 200-day windows, "
                    "bar-by-bar exits (RSI recovery or max hold).")
@@ -1221,6 +1230,83 @@ def _rsi2_params_form() -> None:
             st.toast(f"RSI2 parameters saved to {path}", icon="✅")
 
 
+def _red_day_params_form() -> None:
+    path = "config/red_day_csp.toml"
+    cfg  = _load_toml(path)
+    rdc  = cfg.get("red_day_csp", {})
+    st.caption(f"Changes are saved to `{path}` immediately. Per-ticker dip "
+               "thresholds and sector ETF mappings are preserved — edit those "
+               "in the TOML directly.")
+
+    with st.form("red_day_form"):
+        c1, c2 = st.columns(2)
+        dte_min = c1.number_input("DTE Min", min_value=7, max_value=90,
+                                  value=int(rdc.get("dte_min", 30)), step=1)
+        dte_max = c2.number_input("DTE Max", min_value=7, max_value=120,
+                                  value=int(rdc.get("dte_max", 45)), step=1)
+        delta_t = c1.number_input("Delta Target", min_value=0.05, max_value=0.50,
+                                  value=float(rdc.get("delta_target", 0.22)), step=0.01, format="%.2f")
+        delta_tol = c2.number_input("Delta Tolerance", min_value=0.01, max_value=0.20,
+                                    value=float(rdc.get("delta_tolerance", 0.03)), step=0.01, format="%.2f")
+
+        st.subheader("Dip Trigger & Residual")
+        d1, d2 = st.columns(2)
+        dip_default = d1.number_input(
+            "Default Dip Trigger (%)", min_value=-10.0, max_value=-0.5,
+            value=float(rdc.get("thresholds", {}).get("default", -2.0)),
+            step=0.25, format="%.2f",
+            help="Day move required to consider a name. Per-ticker overrides live in the TOML.")
+        ivr_floor = d2.number_input("IV Rank Floor", min_value=0.0, max_value=90.0,
+                                    value=float(rdc.get("ivr_floor", 30.0)), step=5.0, format="%.0f")
+        res = rdc.get("residual", {})
+        sym_max = d1.number_input("Sympathy Max |residual| (%)", min_value=0.25, max_value=3.0,
+                                  value=float(res.get("sympathy_max", 1.0)), step=0.25, format="%.2f")
+        idio_min = d2.number_input("Idiosyncratic Min residual (%)", min_value=1.0, max_value=6.0,
+                                   value=float(res.get("idiosyncratic_min", 2.5)), step=0.25, format="%.2f")
+
+        st.subheader("Safety Gates")
+        g1, g2 = st.columns(2)
+        buffer_days = g1.number_input("Earnings Buffer (days)", min_value=1, max_value=30,
+                                      value=int(rdc.get("earnings_buffer_days", 14)), step=1)
+        block_unknown = g2.toggle("Block when earnings date unknown",
+                                  value=bool(rdc.get("block_on_unknown_earnings", True)),
+                                  help="Skill rule: unverified is not clear.")
+        attribution_on = g1.toggle("News attribution (LLM)",
+                                   value=bool(rdc.get("attribution_enabled", True)),
+                                   help="Classify why each dip happened via Alpaca news + OpenRouter.")
+        blackout_raw = g2.text_input(
+            "Macro Blackout Dates (comma-separated YYYY-MM-DD)",
+            value=", ".join(str(d) for d in rdc.get("blackout_dates", [])),
+            help="No new entries on FOMC/CPI days — maintain manually.")
+
+        if st.form_submit_button("Save Red-Day CSP Parameters", type="primary"):
+            blackout, bad = [], []
+            for tok in (t.strip() for t in blackout_raw.split(",") if t.strip()):
+                try:
+                    date.fromisoformat(tok)
+                    blackout.append(tok)
+                except ValueError:
+                    bad.append(tok)
+            if bad:
+                st.warning(f"Ignored invalid blackout date(s): {', '.join(bad)}")
+            cfg["red_day_csp"] = {
+                **rdc,  # preserves sector_etfs and any future keys
+                "dte_min":                   dte_min,
+                "dte_max":                   dte_max,
+                "delta_target":              delta_t,
+                "delta_tolerance":           delta_tol,
+                "ivr_floor":                 ivr_floor,
+                "earnings_buffer_days":      buffer_days,
+                "block_on_unknown_earnings": block_unknown,
+                "blackout_dates":            blackout,
+                "attribution_enabled":       attribution_on,
+                "residual": {"sympathy_max": sym_max, "idiosyncratic_min": idio_min},
+                "thresholds": {**rdc.get("thresholds", {}), "default": dip_default},
+            }
+            _save_toml(path, cfg)
+            st.toast(f"Red-Day CSP parameters saved to {path}", icon="✅")
+
+
 @st.fragment
 def _config_strategy_tab() -> None:
     st.subheader("Strategy Parameters")
@@ -1231,6 +1317,8 @@ def _config_strategy_tab() -> None:
         _pcs_params_form()
     elif which == "rsi2":
         _rsi2_params_form()
+    elif which == "red_day_csp":
+        _red_day_params_form()
     else:
         st.info(f"No editor for '{which}' yet — edit its TOML in config/ directly.")
 

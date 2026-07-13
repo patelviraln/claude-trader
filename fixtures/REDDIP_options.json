@@ -1,0 +1,62 @@
+[
+ {
+  "symbol": "REDDIP_P145",
+  "strike": 145.0,
+  "expiry": "2026-06-22",
+  "option_type": "put",
+  "delta": -0.1,
+  "iv": 0.38,
+  "bid": 2.17,
+  "ask": 2.45,
+  "volume": 185,
+  "dte": 37
+ },
+ {
+  "symbol": "REDDIP_P150",
+  "strike": 150.0,
+  "expiry": "2026-06-22",
+  "option_type": "put",
+  "delta": -0.155,
+  "iv": 0.4,
+  "bid": 3.54,
+  "ask": 4.0,
+  "volume": 339,
+  "dte": 37
+ },
+ {
+  "symbol": "REDDIP_P155",
+  "strike": 155.0,
+  "expiry": "2026-06-22",
+  "option_type": "put",
+  "delta": -0.221,
+  "iv": 0.42,
+  "bid": 5.3,
+  "ask": 5.98,
+  "volume": 456,
+  "dte": 37
+ },
+ {
+  "symbol": "REDDIP_P160",
+  "strike": 160.0,
+  "expiry": "2026-06-22",
+  "option_type": "put",
+  "delta": -0.31,
+  "iv": 0.44,
+  "bid": 7.79,
+  "ask": 8.79,
+  "volume": 296,
+  "dte": 37
+ },
+ {
+  "symbol": "REDDIP_P170",
+  "strike": 170.0,
+  "expiry": "2026-06-22",
+  "option_type": "put",
+  "delta": -0.48,
+  "iv": 0.46,
+  "bid": 12.61,
+  "ask": 14.23,
+  "volume": 268,
+  "dte": 37
+ }
+]

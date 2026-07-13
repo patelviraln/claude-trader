@@ -1,0 +1,39 @@
+# Red-Day CSP strategy — sell cash-secured puts on sentiment/market-drag dips.
+# Ported from the red-day-sentiment-scanner skill. The core question every
+# scan answers: is this dip a discount or a warning?
+
+[red_day_csp]
+dte_min         = 30
+dte_max         = 45
+delta_target    = 0.22    # skill: 0.20-0.25 delta short puts
+delta_tolerance = 0.03
+ivr_floor       = 30.0    # skill gate 4: prefer IVR >= 30 post-dip
+
+# Earnings gate (skill Rule 1): every candidate expiry must clear the buffer.
+earnings_buffer_days      = 14
+block_on_unknown_earnings = true   # unverified is not clear
+
+# Macro blackout (skill Rule 4): no new CSPs on FOMC/CPI days.
+# Maintain manually: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+blackout_dates = []                # e.g. ["2026-07-29", "2026-09-16"]
+
+# Dip attribution via Alpaca news + OpenRouter (SCANNER_MODEL policy).
+attribution_enabled = true
+
+[red_day_csp.residual]
+sympathy_max      = 1.0   # |residual| below this = market/sector drag (prime)
+idiosyncratic_min = 2.5   # residual beyond this = warning until proven otherwise
+
+# Daily-move trigger per ticker (default -2.0%). Skill rationale: the trigger
+# should mean roughly a 1.5-sigma daily move for THIS name.
+[red_day_csp.thresholds]
+default = -2.0
+AMD     = -3.0   # high beta
+AVGO    = -2.5
+ORCL    = -1.5   # low vol
+
+# Sector ETF used for the sector-sympathy residual (optional per ticker).
+[red_day_csp.sector_etfs]
+AMD  = "SMH"
+AVGO = "SMH"
+ORCL = "XLK"
